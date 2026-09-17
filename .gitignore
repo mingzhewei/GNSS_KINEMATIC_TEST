@@ -1,0 +1,24 @@
+﻿# ===== 数据与手册(体积极大, 不上传) =====
+by_data/
+huace_data/
+by_manual/
+huace_manual/
+
+# ===== 私有记忆/审计笔记 =====
+.codebuddy/
+
+# ===== Python 缓存/工具缓存 =====
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+
+# ===== 临时/测试产物 =====
+_fonttest.png
+_*.py
+
+# ===== 系统/编辑器 =====
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
