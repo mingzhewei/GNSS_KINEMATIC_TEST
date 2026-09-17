@@ -732,7 +732,8 @@ class GPSKinematicAnalyzer:
                 lon = float(parts[3])
                 height = float(parts[4])
 
-                # 无解(NONE)记录坐标为0, 保留供解类型/状态统计, 绘图时再过滤
+                # 无解(NONE)记录坐标常为0, 但北云固件也可能是线性外推的非0坐标;
+                # 故仅按"坐标是否为0"标记有效, 外推的 NONE 点会被保留(见 _enu_coords 注释)
                 valid_coord = not (lat == 0 or lon == 0)
 
                 vel_n = float(parts[6]) if len(parts) > 6 and parts[6] else 0
@@ -1357,6 +1358,12 @@ class GPSKinematicAnalyzer:
         """经纬度 -> 相对首点的 ENU 平面坐标 (equirectangular 短距离近似, m)。
 
         只取 valid_coord 点, 返回 (east_list, north_list, 过滤后的data)。
+
+        说明(数据层面事实, 非猜测): pos_type=NONE(无解)的记录, 北云固件仍可能
+        输出非0的经纬度——这是 INS 的线性/递推外推结果(坐标随时间平滑渐变)。
+        valid_coord 仅按"坐标是否恰好为0"判断, 因此这些 NONE 外推点会被保留
+        下来并参与绘图; 它们彼此连续, 在轨迹图上自然连成一段。这是有意的:
+        保留外推轨迹能完整反映设备在失锁区间的递推行为。
         """
         pts = [d for d in data if d.get('valid_coord', True)]
         if not pts:
@@ -1385,6 +1392,8 @@ class GPSKinematicAnalyzer:
 
         plt.figure(figsize=(9, 8))
         # 按解类型分组绘制(同类型同色, 便于图例)
+        # 注意: NONE(无解)灰点并非错误——北云固件在 NONE 时仍输出线性外推坐标,
+        # 数据层面存在这些连续外推点, 故可逐渐把点联系起来成段, 此处予以保留。
         from collections import OrderedDict
         groups = OrderedDict()
         for e, n, d in zip(east, north, pts):
