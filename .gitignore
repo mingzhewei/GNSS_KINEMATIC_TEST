@@ -13,3 +13,10 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+
+# ===== 审计/验证临时输出 =====
+_*.txt
+_verify_*/
+
+# ===== 源码备份 =====
+*_bak*.py

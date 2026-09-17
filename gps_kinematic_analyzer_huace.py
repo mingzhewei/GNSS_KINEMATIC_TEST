@@ -9,7 +9,7 @@
     主要功能：
     1. 解析 <BESTP(缩写主源,10Hz)/<RTKP/<RTKV/#BESTPOSA/#BESTDOPSA 等华测专有报文
     2. 解析 $GNGGA/$GNGSA/$GPGSV 等 NMEA 标准报文
-    3. 定位质量分析：采样率/丢帧、解类型分布、卫星可见性、DOP、速度(RTKV)、RTK链路(基站ID/差分龄期)
+    3. 定位质量分析：采样率/丢帧、解类型分布、卫星跟踪/参与解算数量、DOP、速度(RTKV)、RTK链路(基站ID/差分龄期)
     4. 生成可视化图表（轨迹图、时间序列、分布图）
     5. 自动生成 HTML 和 Markdown 分析报告
 
@@ -1152,65 +1152,6 @@ class GPSKinematicAnalyzer:
             self._cache_bestgnssposa = data
             return data
         return []
-        # --- 以下旧路径保留不可达, 由 parse_bestpa_ascii 统一解析 ---
-        data = []
-
-        for line in []:
-            if ';' not in line:
-                continue
-            header_str, data_str = line.split(';', 1)
-            parts = data_str.split(',')
-            if len(parts) < 10:
-                continue
-
-            try:
-                header_parts = header_str.split(',')
-                if len(header_parts) < 8:
-                    continue
-                # 华测报文头: [6]=GPS周 [7]=TOW周内毫秒(协议手册表3-18), TOW需/1000转为秒
-                # 注: 北云标准头为 [6]=周 [7]=周秒(单位秒), 两家TOW单位与字段位置均不同
-                timestamp = float(header_parts[7]) / 1000.0
-
-                # 华测BESTP数据字段(协议手册表3-38):
-                # [0]解算状态 [1]定位类型 [2]坐标系ID [3]Reserved
-                # [4]纬度 [5]经度 [6]海拔高 [7]高程异常
-                # [8]纬度sigma [9]经度sigma [10]高程sigma [11]差分龄期 [12]解算时间 ...
-                sol_status = parts[0].strip()
-                pos_type = parts[1].strip()
-                lat = float(parts[4])
-                lon = float(parts[5])
-                height = float(parts[6])
-
-                if lat == 0 or lon == 0:
-                    continue
-
-                lat_sigma = float(parts[8]) if len(parts) > 8 and parts[8] else 0
-                lon_sigma = float(parts[9]) if len(parts) > 9 and parts[9] else 0
-                hgt_sigma = float(parts[10]) if len(parts) > 10 and parts[10] else 0
-
-                horizontal_sigma = math.sqrt(lat_sigma**2 + lon_sigma**2)
-                vertical_sigma = hgt_sigma
-
-                data.append({
-                    'timestamp': timestamp,
-                    'latitude': lat,
-                    'longitude': lon,
-                    'height': height,
-                    'sol_status': sol_status,
-                    'pos_type': pos_type,
-                    'solution_type': pos_type,
-                    'lat_sigma': lat_sigma,
-                    'lon_sigma': lon_sigma,
-                    'hgt_sigma': hgt_sigma,
-                    'horizontal_sigma': horizontal_sigma,
-                    'vertical_sigma': vertical_sigma
-                })
-            except Exception as e:
-                print(f"解析BESTGNSSPOSA失败: {e}, 行: {line[:100]}")
-                continue
-
-        self._cache_bestgnssposa = data
-        return data
     
     def parse_bestposa(self):
         """解析BESTPOSA报文，提取解算状态（sol stat）
@@ -1244,56 +1185,8 @@ class GPSKinematicAnalyzer:
             } for d in bestpa]
             self._cache_bestposa = data
             return data
-        lines = []
-        data = []
+        return []
 
-        # 表4-1解算状态描述说明
-        sol_status_map = {
-            'SOL_COMPUTED': 0,
-            'INSUFFICIENT_OBS': 1,
-            'NO_CONVERGENCE': 2,
-            'SINGULARITY': 3,
-            'COV_TRACE': 4,
-            'VARIANCE': 5,
-            'PENDING': 6,
-            'INVALID_FIX': 7,
-            'RESIDUALS': 8,
-            'INTEGRITY_WARNING': 9
-        }
-
-        for line in lines:
-            try:
-                if ';' not in line:
-                    continue
-                header_str, data_str = line.split(';', 1)
-                header_parts = header_str.split(',')
-                if len(header_parts) < 8:
-                    continue
-                # 华测报文头: [6]=GPS周 [7]=TOW周内毫秒(协议手册表3-18), TOW需/1000转为秒
-                # 注: 北云标准头为 [6]=周 [7]=周秒(单位秒), 两家TOW单位与字段位置均不同
-                timestamp = float(header_parts[7]) / 1000.0
-
-                data_part = data_str.split(',')
-                if len(data_part) < 3:
-                    continue
-
-                sol_stat_str = data_part[0].strip()
-                pos_type_str = data_part[1].strip() if len(data_part) > 1 else ''
-
-                sol_stat = sol_status_map.get(sol_stat_str, -1)
-
-                data.append({
-                    'timestamp': timestamp,
-                    'sol_stat_str': sol_stat_str,
-                    'sol_stat': sol_stat,
-                    'pos_type': pos_type_str
-                })
-            except Exception as e:
-                continue
-
-        self._cache_bestposa = data
-        return data
-    
     def parse_bestpa_ascii(self):
         """解析华测 #BESTPA 标准ASCII位置报文(新采集格式, 主定位源回退)
 
@@ -1617,40 +1510,64 @@ class GPSKinematicAnalyzer:
 
     
     def analyze_satellite_visibility(self):
-        """分析卫星可见性"""
-        print("分析卫星可见性...")
-        
-        # 华测: 优先用 <BESTP 的跟踪卫星数(10Hz高密度), 回退 #BESTPA, 再回退 GGA
+        """分析卫星数量(跟踪/可用两层, M7手册定义)
+
+        - 跟踪卫星数 Tracked : <BESTP/#BESTPA #SVs     "跟踪到的卫星数"(手册 p83/p86)
+        - 可用卫星数 Used    : <BESTP/#BESTPA #solnSVs "参与解算的卫星数"(手册 p84)
+        用户要求(2026-09-17): 只保留"跟踪"与"参与解算"两层, 不使用GSV可见数。
+        关系: 跟踪 >= 可用。主源 <BESTP(10Hz), 回退 #BESTPA。
+        回退: 无 BESTP/BESTPA 时用 GGA 字段8, 手册定义为"使用中的卫星数"
+              (M7手册 3.1.1 表3-1), 属"可用"口径, 故回退时填入 used。
+        兼容: 保留 average_satellites 等旧键(=跟踪口径), 供报告模板沿用。
+        """
+        print("分析卫星数量(跟踪/可用)...")
+
         bestp = self.parse_bestp_abbrev() or self.parse_bestpa_ascii()
         gpgga_data = self.parse_gpgga()
-        if bestp:
-            num_sats_list = [d['num_satellites'] for d in bestp if d.get('num_satellites', 0) > 0]
-        elif gpgga_data:
-            num_sats_list = [d['num_satellites'] for d in gpgga_data]
-        else:
-            print("未找到卫星可见性数据")
+
+        def _stats(lst):
+            return (statistics.mean(lst), min(lst), max(lst)) if lst else (None, None, None)
+
+        res = {}
+        tr = [d['num_satellites'] for d in bestp if d.get('num_satellites', 0) > 0] if bestp else []
+        us = [d['num_soln_satellites'] for d in bestp if d.get('num_soln_satellites', 0) > 0] if bestp else []
+        # 回退: GGA 字段8("使用中的卫星数", 属可用口径)
+        if not us and gpgga_data:
+            us = [d['num_satellites'] for d in gpgga_data if d.get('num_satellites', 0) > 0]
+
+        for name, lst in (('tracked', tr), ('used', us)):
+            a, mn, mx = _stats(lst)
+            if a is not None:
+                res[f'average_{name}'] = a
+                res[f'min_{name}'] = mn
+                res[f'max_{name}'] = mx
+                res[f'{name}_counts'] = lst
+
+        if not res:
+            print("未找到卫星数量数据(BESTP/BESTPA/GGA)")
             return
-        if num_sats_list:
-            avg_sats = statistics.mean(num_sats_list)
-            min_sats = min(num_sats_list)
-            max_sats = max(num_sats_list)
-            
-            self.analysis_results['satellite_visibility'] = {
-                'average_satellites': avg_sats,
-                'min_satellites': min_sats,
-                'max_satellites': max_sats,
-                'satellite_counts': num_sats_list
-            }
-            
-            print(f"平均可见卫星数: {avg_sats:.1f}")
-            print(f"最小可见卫星数: {min_sats}")
-            print(f"最大可见卫星数: {max_sats}")
+
+        main = tr if tr else us
+        if main:
+            res['average_satellites'] = statistics.mean(main)
+            res['min_satellites'] = min(main)
+            res['max_satellites'] = max(main)
+            res['satellite_counts'] = main
+
+        self.analysis_results['satellite_visibility'] = res
+
+        label = {'tracked': '跟踪卫星数', 'used': '可用卫星数'}
+        for name in ('tracked', 'used'):
+            if f'average_{name}' in res:
+                print(f"平均{label[name]}: {res[f'average_{name}']:.1f} "
+                      f"(最小{res[f'min_{name}']} 最大{res[f'max_{name}']})")
     
     def analyze_dop(self):
         """分析DOP值 (PDOP/HDOP/VDOP 三件套)
 
         数据源优先级(2026-09-17):
-          1. #BESTDOPSA  —— 华测权威DOP, 含 GDOP/PDOP/HDOP/VDOP/TDOP 全量, 最可靠
+          1. #BESTDOPSA —— 华测权威DOP(手册表3-36): pdop/gdop/hdop/tdop/htdop,
+             【不含VDOP】; VDOP 唯一来源为 $GNGSA(表3-3 第7字段=垂直精度因子)
           2. $GNGSA 组合 —— 多星座整合后的 PDOP/HDOP/VDOP (NMEA共识, 取组合条)
           3. $GNGGA      —— 仅HDOP (NMEA GGA只携带HDOP一个值, 无PDOP/VDOP)
         三件套齐全时报告同时给出 PDOP/HDOP/VDOP 的均值/最值。
@@ -1939,36 +1856,58 @@ class GPSKinematicAnalyzer:
         print(f"保存GNSS解类型分布图: {output_file}")
     
     def _plot_satellite_time_series(self):
-        """绘制卫星数量时间序列(优先主定位源BESTP/BESTPA, 回退GGA)"""
-        sat_data = self.parse_bestp_abbrev() or self.parse_bestpa_ascii()
-        if sat_data:
-            sat_data = [d for d in sat_data if d.get('num_satellites', 0) > 0]
-        if not sat_data:
-            sat_data = self.parse_gpgga()
-        gpgga_data = sat_data
-        if gpgga_data:
-            # 使用相对时间
-            timestamps = [d['timestamp'] for d in gpgga_data]
-            if timestamps:
-                min_time = min(timestamps)
-                relative_times = [t - min_time for t in timestamps]
-            else:
-                relative_times = timestamps
-            
-            num_sats = [d['num_satellites'] for d in gpgga_data]
-            
+        """绘制卫星数量时间序列(跟踪/可用两层)
+
+        两层口径(M7 手册定义):
+          - 跟踪 Tracked : <BESTP/#BESTPA #SVs     "跟踪到的卫星数"(p83/p86)
+          - 可用 Used    : <BESTP/#BESTPA #solnSVs "参与解算的卫星数"(p84)
+        用户要求(2026-09-17): 去掉"可见"层, 只保留跟踪与参与解算。
+        主源 <BESTP(10Hz), 回退 #BESTPA; 再回退 GGA(字段8=使用中的卫星数, 属可用口径)。
+        """
+        best = self.parse_bestp_abbrev() or self.parse_bestpa_ascii()
+        if not best:
+            gpgga = self.parse_gpgga()
+            if not gpgga:
+                return
+            t0 = min(d['timestamp'] for d in gpgga)
+            x = [d['timestamp'] - t0 for d in gpgga]
+            used = [d.get('num_satellites', 0) for d in gpgga]
             plt.figure(figsize=(12, 6))
-            plt.plot(relative_times, num_sats)
-            plt.title('Number of Satellites Time Series')
+            plt.plot(x, used, label='Used (GGA #sats)', color='#d62728',
+                     linewidth=1.1)
+            plt.title('Satellite Count Time Series (Used)')
             plt.xlabel('Time (seconds)')
             plt.ylabel('Number of Satellites')
+            plt.legend(loc='best', fontsize=9)
             plt.grid(True)
             plt.tight_layout()
-            
             output_file = os.path.join(self.output_dir, 'satellite_time_series.png')
             plt.savefig(output_file)
             plt.close()
-            print(f"保存卫星数量时间序列图: {output_file}")
+            print(f"保存卫星数量时间序列图(GGA回退, 仅可用): {output_file}")
+            return
+
+        t0 = min(d['timestamp'] for d in best)
+        x = [d['timestamp'] - t0 for d in best]
+        tracked = [d.get('num_satellites', 0) for d in best]
+        used = [d.get('num_soln_satellites', 0) for d in best]
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(x, tracked, label='Tracked (#SVs)', color='#1f77b4',
+                 linewidth=1.1)
+        plt.plot(x, used, label='Used (#solnSVs)', color='#d62728',
+                 linewidth=1.1)
+        plt.title('Satellite Count Time Series (Tracked / Used)')
+        plt.xlabel('Time (seconds)')
+        plt.ylabel('Number of Satellites')
+        plt.legend(loc='best', fontsize=9)
+        plt.grid(True)
+        plt.tight_layout()
+
+        output_file = os.path.join(self.output_dir, 'satellite_time_series.png')
+        plt.savefig(output_file)
+        plt.close()
+        print(f"保存卫星数量时间序列图(跟踪/可用两层): {output_file}")
     
     def _plot_dop_time_series(self):
         """绘制DOP时间序列 (分字段混合, 数据源自适应)
@@ -2680,32 +2619,35 @@ class GPSKinematicAnalyzer:
         <p><strong>GNSS固定解比率:</strong> <span class="{'pass' if st['fixed_ratio'] > 95 else 'metric-warning' if st['fixed_ratio'] > 80 else 'fail'}">{st['fixed_ratio']:.1f}%</span></p>
             """
 
-        # 卫星可见性分析
+        # 卫星数量分析(跟踪/可用两层, 手册定义)
         if 'satellite_visibility' in self.analysis_results:
             sv = self.analysis_results['satellite_visibility']
+            rows = ''
+            defs = (
+                ('tracked', '跟踪卫星数', '#SVs"跟踪到的卫星数"(M7手册 BESTP 字段15/p83)'),
+                ('used', '可用卫星数', '#solnSVs"参与解算的卫星数"(M7手册 BESTP 字段16/p84)'),
+            )
+            for key, cn, desc in defs:
+                if f'average_{key}' not in sv:
+                    continue
+                rows += (f'            <tr>\n'
+                         f'                <td>{cn}<br/><small>{desc}</small></td>\n'
+                         f'                <td>平均 {sv[f"average_{key}"]:.1f} / '
+                         f'最小 {sv[f"min_{key}"]} / 最大 {sv[f"max_{key}"]}</td>\n'
+                         f'            </tr>\n')
             html_content += f"""
-        <h2>4. 卫星可见性分析</h2>
+        <h2>4. 卫星数量分析</h2>
         <div class="chart">
             <img src="satellite_time_series.png" alt="卫星数量时间序列"/>
         </div>
         <table>
             <tr>
-                <th>指标</th>
-                <th>数值</th>
+                <th>指标(口径依据M7手册)</th>
+                <th>数值(平均/最小/最大)</th>
             </tr>
-            <tr>
-                <td>平均可见卫星数</td>
-                <td>{sv['average_satellites']:.1f}</td>
-            </tr>
-            <tr>
-                <td>最小可见卫星数</td>
-                <td>{sv['min_satellites']}</td>
-            </tr>
-            <tr>
-                <td>最大可见卫星数</td>
-                <td>{sv['max_satellites']}</td>
-            </tr>
-        </table>
+{rows}        </table>
+        <p><small>两层关系: 跟踪 &ge; 可用。跟踪为接收机已锁定跟踪的卫星, '
+        '可用为实际参与位置解算的卫星。</small></p>
             """
         
         # DOP分析 (PDOP/HDOP/VDOP 三件套, 数据源自适应)
@@ -2859,13 +2801,20 @@ class GPSKinematicAnalyzer:
             })
         
         if 'satellite_visibility' in self.analysis_results:
-            avg_sats = self.analysis_results['satellite_visibility']['average_satellites']
-            status = 'pass' if avg_sats >= 10 else 'metric-warning' if avg_sats >= 6 else 'fail'
-            evaluations.append({
-                'metric': '卫星可见性',
-                'status': status,
-                'description': f'平均{avg_sats:.1f}颗卫星，{"良好" if avg_sats >= 10 else "基本满足" if avg_sats >= 6 else "需要改善"}'
-            })
+            sv_eval = self.analysis_results['satellite_visibility']
+            avg_tr = sv_eval.get('average_tracked')
+            avg_us = sv_eval.get('average_used')
+            if avg_tr is not None:
+                status = 'pass' if avg_tr >= 10 else 'metric-warning' if avg_tr >= 6 else 'fail'
+                desc = f'平均跟踪{avg_tr:.1f}颗'
+                if avg_us is not None:
+                    desc += f'，平均参与解算{avg_us:.1f}颗'
+                desc += '，' + ('良好' if avg_tr >= 10 else '基本满足' if avg_tr >= 6 else '需要改善')
+                evaluations.append({
+                    'metric': '卫星数(跟踪/参与解算)',
+                    'status': status,
+                    'description': desc
+                })
         
         if 'dop' in self.analysis_results:
             avg_hdop = self.analysis_results['dop']['average_hdop']
@@ -3031,19 +2980,28 @@ class GPSKinematicAnalyzer:
 
 """
 
-        # 卫星可见性分析
+        # 卫星数量分析(跟踪/可用两层, 手册定义)
         if 'satellite_visibility' in self.analysis_results:
             sv = self.analysis_results['satellite_visibility']
+            mrows = ''
+            defs = (
+                ('tracked', '跟踪卫星数', '#SVs跟踪到的卫星数(M7手册BESTP字段15/p83)'),
+                ('used', '可用卫星数', '#solnSVs参与解算的卫星数(M7手册BESTP字段16/p84)'),
+            )
+            for key, cn, desc in defs:
+                if f'average_{key}' not in sv:
+                    continue
+                mrows += (f'| {cn} | {sv[f"average_{key}"]:.1f} | {sv[f"min_{key}"]} | '
+                          f'{sv[f"max_{key}"]} | {desc} |\n')
             md_content += f"""
-## 4. 卫星可见性分析
+## 4. 卫星数量分析
 
 ![卫星数量时间序列](satellite_time_series.png)
 
-| 指标 | 数值 |
-|------|------|
-| 平均可见卫星数 | {sv['average_satellites']:.1f} |
-| 最小可见卫星数 | {sv['min_satellites']} |
-| 最大可见卫星数 | {sv['max_satellites']} |
+| 指标 | 平均 | 最小 | 最大 | 口径依据(M7手册) |
+|------|------|------|------|----------------------|
+{mrows}
+> 两层关系: 跟踪 >= 可用。
 
         """
         
@@ -3168,13 +3126,20 @@ GNSS轨迹图使用ENU（East-North-Up）坐标系显示，按数据实际出现
             })
         
         if 'satellite_visibility' in self.analysis_results:
-            avg_sats = self.analysis_results['satellite_visibility']['average_satellites']
-            status = '通过' if avg_sats >= 10 else '警告' if avg_sats >= 6 else '失败'
-            evaluations.append({
-                'metric': '卫星可见性',
-                'status': status,
-                'description': f'平均{avg_sats:.1f}颗卫星，{"良好" if avg_sats >= 10 else "基本满足" if avg_sats >= 6 else "需要改善"}'
-            })
+            sv_eval = self.analysis_results['satellite_visibility']
+            avg_tr = sv_eval.get('average_tracked')
+            avg_us = sv_eval.get('average_used')
+            if avg_tr is not None:
+                status = '通过' if avg_tr >= 10 else '警告' if avg_tr >= 6 else '失败'
+                desc = f'平均跟踪{avg_tr:.1f}颗'
+                if avg_us is not None:
+                    desc += f'，平均参与解算{avg_us:.1f}颗'
+                desc += '，' + ('良好' if avg_tr >= 10 else '基本满足' if avg_tr >= 6 else '需要改善')
+                evaluations.append({
+                    'metric': '卫星数(跟踪/参与解算)',
+                    'status': status,
+                    'description': desc
+                })
         
         if 'dop' in self.analysis_results:
             avg_hdop = self.analysis_results['dop']['average_hdop']
@@ -3241,7 +3206,7 @@ GNSS轨迹图使用ENU（East-North-Up）坐标系显示，按数据实际出现
         # 分析解类型
         self.analyze_solution_type()
         
-        # 分析卫星可见性
+        # 分析卫星数量(跟踪/可用)
         self.analyze_satellite_visibility()
         
         # 分析DOP

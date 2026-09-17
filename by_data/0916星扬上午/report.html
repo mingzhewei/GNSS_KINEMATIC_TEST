@@ -117,7 +117,7 @@
     <div class="container">
         <h1>GPS/RTK Kinematic定位分析报告【北云 BEIYUN M21 · GNSS/INS组合惯导】</h1>
         <p><strong>分析输入(COM3/ASCII):</strong> 0916星扬上午.dat |
-           <strong>生成时间:</strong> 2026-09-17 14:32:48 |
+           <strong>生成时间:</strong> 2026-09-17 19:23:53 |
            <strong>分析工具:</strong> 北云 BEIYUN M21 Kinematic Analyzer</p>
 
         <!-- 数据概览 -->
@@ -435,28 +435,26 @@
         </table>
         <p><strong>INS固定解比率:</strong> <span class="fail">17.8%</span></p>
             
-        <h2>5. 卫星可见性分析</h2>
+        <h2>5. 卫星数量分析</h2>
         <div class="chart">
             <img src="satellite_time_series.png" alt="卫星数量时间序列"/>
         </div>
         <table>
             <tr>
-                <th>指标</th>
-                <th>数值</th>
+                <th>指标(口径依据UG016手册)</th>
+                <th>数值(平均/最小/最大)</th>
             </tr>
             <tr>
-                <td>平均可见卫星数</td>
-                <td>42.1</td>
+                <td>跟踪卫星数<br/><small>BESTGNSSPOSA #SVs"跟踪到的卫星数"(UG016 4.2.2 字段15)</small></td>
+                <td>平均 42.1 / 最小 13 / 最大 48</td>
             </tr>
             <tr>
-                <td>最小可见卫星数</td>
-                <td>13</td>
-            </tr>
-            <tr>
-                <td>最大可见卫星数</td>
-                <td>48</td>
+                <td>可用卫星数<br/><small>BESTGNSSPOSA #solnSVs"参与解算的卫星数"(UG016 4.2.2 字段16)</small></td>
+                <td>平均 41.7 / 最小 4 / 最大 47</td>
             </tr>
         </table>
+        <p><small>两层关系: 跟踪 &ge; 可用。跟踪为接收机已锁定跟踪的卫星, '
+        '可用为实际参与位置解算的卫星。口径依据 UG016 4.2.2 字段15/16。</small></p>
             
         <h2>6. DOP分析</h2>
         <p><strong>数据源:</strong> $GPGSA(系统组合) ｜
@@ -486,7 +484,7 @@
             </tr>
             <tr>
                 <td>平均速度</td>
-                <td>0.29</td>
+                <td>0.83</td>
                 <td>m/s</td>
             </tr>
             <tr>
@@ -522,7 +520,7 @@
             
         <h2>9. 位置分析</h2>
         <div class="chart">
-            <img src="position_time_series.png" alt="位置时间序列"/>
+            <img src="position_time_series_gnss.png" alt="位置时间序列"/>
         </div>
         <p>位置时间序列显示了接收机在Kinematic环境下的位置变化。从图中可以观察到位置的连续性和稳定性。</p>
         
@@ -572,9 +570,9 @@
                 </tr>
             
                 <tr>
-                    <td>卫星可见性</td>
+                    <td>卫星数(跟踪/参与解算)</td>
                     <td class="pass">pass</td>
-                    <td>平均42.1颗卫星，良好</td>
+                    <td>平均跟踪42.1颗，平均参与解算41.7颗，良好</td>
                 </tr>
             
                 <tr>

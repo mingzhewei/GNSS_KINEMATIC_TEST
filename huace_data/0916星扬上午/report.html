@@ -117,7 +117,7 @@
     <div class="container">
         <h1>GPS/RTK Kinematic定位分析报告【华测 HUACE · 纯GNSS】</h1>
         <p><strong>分析输入(COM1/ASCII):</strong> 0916星扬上午.log |
-           <strong>生成时间:</strong> 2026-09-17 16:39:15 |
+           <strong>生成时间:</strong> 2026-09-17 19:24:47 |
            <strong>分析工具:</strong> 华测 HUACE Kinematic Analyzer</p>
 
         <!-- 数据概览 -->
@@ -489,28 +489,26 @@
         </table>
         <p><strong>GNSS固定解比率:</strong> <span class="metric-warning">89.2%</span></p>
             
-        <h2>4. 卫星可见性分析</h2>
+        <h2>4. 卫星数量分析</h2>
         <div class="chart">
             <img src="satellite_time_series.png" alt="卫星数量时间序列"/>
         </div>
         <table>
             <tr>
-                <th>指标</th>
-                <th>数值</th>
+                <th>指标(口径依据M7手册)</th>
+                <th>数值(平均/最小/最大)</th>
             </tr>
             <tr>
-                <td>平均可见卫星数</td>
-                <td>52.2</td>
+                <td>跟踪卫星数<br/><small>#SVs"跟踪到的卫星数"(M7手册 BESTP 字段15/p83)</small></td>
+                <td>平均 52.2 / 最小 38 / 最大 57</td>
             </tr>
             <tr>
-                <td>最小可见卫星数</td>
-                <td>38</td>
-            </tr>
-            <tr>
-                <td>最大可见卫星数</td>
-                <td>57</td>
+                <td>可用卫星数<br/><small>#solnSVs"参与解算的卫星数"(M7手册 BESTP 字段16/p84)</small></td>
+                <td>平均 46.4 / 最小 37 / 最大 50</td>
             </tr>
         </table>
+        <p><small>两层关系: 跟踪 &ge; 可用。跟踪为接收机已锁定跟踪的卫星, '
+        '可用为实际参与位置解算的卫星。</small></p>
             
         <h2>5. DOP分析</h2>
         <p><strong>数据源:</strong> PDOP/HDOP=#BESTDOPSA, VDOP=$GNGSA(同频混合) ｜
@@ -610,9 +608,9 @@
                 </tr>
             
                 <tr>
-                    <td>卫星可见性</td>
+                    <td>卫星数(跟踪/参与解算)</td>
                     <td class="pass">pass</td>
-                    <td>平均52.2颗卫星，良好</td>
+                    <td>平均跟踪52.2颗，平均参与解算46.4颗，良好</td>
                 </tr>
             
                 <tr>
