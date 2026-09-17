@@ -1,0 +1,608 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>GPS/RTK Kinematic定位分析报告 - 0916星扬上午</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1, h2, h3 {
+            color: #333;
+            margin-top: 30px;
+        }
+        h1 {
+            border-bottom: 3px solid #2c3e50;
+            padding-bottom: 10px;
+        }
+        h2 {
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .badge-feature {
+            display: inline-block;
+            background-color: #8e44ad;
+            color: #fff;
+            font-size: 12px;
+            font-weight: bold;
+            padding: 2px 10px;
+            border-radius: 12px;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        .note {
+            background-color: #eef6fb;
+            border-left: 4px solid #3498db;
+            padding: 12px 16px;
+            margin: 15px 0;
+            border-radius: 4px;
+            font-size: 14px;
+            color: #2c3e50;
+        }
+        .metric-good {
+            color: green;
+            font-weight: bold;
+        }
+        .metric-warning {
+            color: orange;
+            font-weight: bold;
+        }
+        .metric-bad {
+            color: red;
+            font-weight: bold;
+        }
+        .chart {
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            overflow: hidden;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .chart img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .pass {
+            color: green;
+            font-weight: bold;
+        }
+        .fail {
+            color: red;
+            font-weight: bold;
+        }
+        .metric-info {
+            color: #17a2b8;
+            font-weight: bold;
+        }
+        .summary-table {
+            background-color: #f8f9fa;
+            border: 2px solid #dee2e6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GPS/RTK Kinematic定位分析报告【北云 BEIYUN M21 · GNSS/INS组合惯导】</h1>
+        <p><strong>分析输入(COM3/ASCII):</strong> 0916星扬上午.dat |
+           <strong>生成时间:</strong> 2026-09-17 14:32:48 |
+           <strong>分析工具:</strong> 北云 BEIYUN M21 Kinematic Analyzer</p>
+
+        <!-- 数据概览 -->
+        <h2>1. 数据概览</h2>
+        <table class="summary-table">
+            <tr>
+                <th>报文类型</th>
+                <th>数量</th>
+                <th>占比</th>
+            </tr>
+        
+            <tr>
+                <td>#INSPVAXA</td>
+                <td>14876</td>
+                <td>9.4%</td>
+            </tr>
+            
+            <tr>
+                <td>#BESTPOSA</td>
+                <td>7438</td>
+                <td>4.7%</td>
+            </tr>
+            
+            <tr>
+                <td>$GPGGA</td>
+                <td>7438</td>
+                <td>4.7%</td>
+            </tr>
+            
+            <tr>
+                <td>$GPGSV</td>
+                <td>20224</td>
+                <td>12.8%</td>
+            </tr>
+            
+            <tr>
+                <td>$GLGSV</td>
+                <td>15977</td>
+                <td>10.1%</td>
+            </tr>
+            
+            <tr>
+                <td>$GAGSV</td>
+                <td>18485</td>
+                <td>11.7%</td>
+            </tr>
+            
+            <tr>
+                <td>$GQGSV</td>
+                <td>7370</td>
+                <td>4.7%</td>
+            </tr>
+            
+            <tr>
+                <td>$GBGSV</td>
+                <td>29224</td>
+                <td>18.5%</td>
+            </tr>
+            
+            <tr>
+                <td>$GPGSA</td>
+                <td>7424</td>
+                <td>4.7%</td>
+            </tr>
+            
+            <tr>
+                <td>$GPGST</td>
+                <td>7438</td>
+                <td>4.7%</td>
+            </tr>
+            
+            <tr>
+                <td>#BESTGNSSPOSA</td>
+                <td>7438</td>
+                <td>4.7%</td>
+            </tr>
+            
+            <tr>
+                <td>#HEADINGA</td>
+                <td>7438</td>
+                <td>4.7%</td>
+            </tr>
+            
+            <tr>
+                <td>#TRACKSTATA</td>
+                <td>7438</td>
+                <td>4.7%</td>
+            </tr>
+            
+        </table>
+        <p><strong>数据完整性:</strong> 158208 条有效报文
+        (原始 306968 行,
+        乱码残片 0 行,
+        二进制 0 行)</p>
+        
+        <h2>2. 完整性检查与报文周期核对(ICOM3配置)</h2>
+        <table>
+            <tr>
+                <th>报文</th>
+                <th>条数</th>
+                <th>设定周期(s)</th>
+                <th>实际周期(s)</th>
+                <th>实际频率(Hz)</th>
+                <th>估算丢帧率</th>
+                <th>状态</th>
+                <th>备注</th>
+            </tr>
+        
+            <tr>
+                <td>#BESTPOSA</td>
+                <td>7438</td>
+                <td>1.000</td>
+                <td class="metric-warning">0.200</td>
+                <td class="metric-warning">5.00</td>
+                <td>0.0%</td>
+                <td class="metric-warning">提示</td>
+                <td>设定1.0s, 实测通常0.2s(输出更密); 该报文已不再使用, 仅信息提示</td>
+            </tr>
+                
+            <tr>
+                <td>#INSPVAXA</td>
+                <td>14876</td>
+                <td>0.100</td>
+                <td class="pass">0.100</td>
+                <td class="pass">10.00</td>
+                <td>0.0%</td>
+                <td class="pass">正常</td>
+                <td></td>
+            </tr>
+                
+            <tr>
+                <td>$GPGGA</td>
+                <td>7438</td>
+                <td>1.000</td>
+                <td class="metric-warning">0.200</td>
+                <td class="metric-warning">5.00</td>
+                <td>0.0%</td>
+                <td class="metric-warning">提示</td>
+                <td>设定1.0s, 实测通常0.2s(输出更密); 实际输出比设定更频繁, 不影响使用, 仅信息提示</td>
+            </tr>
+                
+            <tr>
+                <td>#BESTGNSSPOSA</td>
+                <td>7438</td>
+                <td>0.200</td>
+                <td class="pass">0.200</td>
+                <td class="pass">5.00</td>
+                <td>0.0%</td>
+                <td class="pass">正常</td>
+                <td></td>
+            </tr>
+                
+            <tr>
+                <td>#HEADINGA</td>
+                <td>7438</td>
+                <td>0.200</td>
+                <td class="pass">0.200</td>
+                <td class="pass">5.00</td>
+                <td>0.0%</td>
+                <td class="pass">正常</td>
+                <td></td>
+            </tr>
+                
+            <tr>
+                <td>$GPIMU</td>
+                <td>148760</td>
+                <td>0.010</td>
+                <td class="metric-warning">-</td>
+                <td class="metric-warning">-</td>
+                <td>-</td>
+                <td class="metric-warning">提示</td>
+                <td>按用户要求放弃处理, 仅计数显示</td>
+            </tr>
+                
+            <tr>
+                <td>$GPGSV</td>
+                <td>20224</td>
+                <td>0.100</td>
+                <td class="pass">-</td>
+                <td class="pass">-</td>
+                <td>-</td>
+                <td class="pass">正常</td>
+                <td>无可用时间戳, 按报文插入规律推断(以实测数据为准)</td>
+            </tr>
+                
+            <tr>
+                <td>$GPGSA</td>
+                <td>7424</td>
+                <td>0.100</td>
+                <td class="pass">-</td>
+                <td class="pass">-</td>
+                <td>-</td>
+                <td class="pass">正常</td>
+                <td>无可用时间戳, 按报文插入规律推断(以实测数据为准)</td>
+            </tr>
+                
+            <tr>
+                <td>$GPGST</td>
+                <td>7438</td>
+                <td>0.100</td>
+                <td class="pass">-</td>
+                <td class="pass">-</td>
+                <td>-</td>
+                <td class="pass">正常</td>
+                <td>无可用时间戳, 按报文插入规律推断(以实测数据为准)</td>
+            </tr>
+                
+            <tr>
+                <td>#TRACKSTATA</td>
+                <td>7438</td>
+                <td>0.200</td>
+                <td class="pass">0.200</td>
+                <td class="pass">5.00</td>
+                <td>0.0%</td>
+                <td class="pass">正常</td>
+                <td></td>
+            </tr>
+                
+        </table>
+        <p style="color:#c0392b;font-weight:bold;">注意: 标红/标黄项表示实际报文周期与设定周期可能不符或存在缺失, 请核对设备输出配置。</p>
+        
+        <h3>ICOM4 关注项(静态相关)</h3>
+        <ul>
+                    <li>RANGECMPB ONTIME 0.2s (二进制, 原始观测值压缩格式; 当前程序未实现二进制解码)</li>
+        </ul>
+
+        <p><strong>采样率分析:</strong> 5.00 Hz (平均间隔: 0.200 秒)</p>
+            <p><strong>RTK链路:</strong> 基站ID 1793 (核对7240次) ／ 差分龄期 平均1.12s, 最大3.80s</p>
+
+        <h2>3. GNSS解类型分析</h2>
+        <div class="chart">
+            <img src="gnss_solution_type_distribution.png" alt="GNSS解类型分布"/>
+        </div>
+        <table>
+            <tr>
+                <th>解类型</th>
+                <th>数量</th>
+                <th>占比</th>
+            </tr>
+            
+            <tr>
+                <td>NARROW_INT</td>
+                <td>6195</td>
+                <td>83.3%</td>
+            </tr>
+                
+            <tr>
+                <td>NARROW_FLOAT</td>
+                <td>881</td>
+                <td>11.8%</td>
+            </tr>
+                
+            <tr>
+                <td>NONE</td>
+                <td>198</td>
+                <td>2.7%</td>
+            </tr>
+                
+            <tr>
+                <td>SINGLE</td>
+                <td>116</td>
+                <td>1.6%</td>
+            </tr>
+                
+            <tr>
+                <td>PSRDIFF</td>
+                <td>48</td>
+                <td>0.6%</td>
+            </tr>
+                
+        </table>
+        <p><strong>GNSS固定解比率:</strong> <span class="metric-warning">83.3%</span></p>
+            
+        <h2>4. INS解类型分析</h2>
+        <div class="chart">
+            <img src="ins_solution_type_distribution.png" alt="INS解类型分布"/>
+        </div>
+        <table>
+            <tr>
+                <th>解类型</th>
+                <th>数量</th>
+                <th>占比</th>
+            </tr>
+            
+            <tr>
+                <td>NONE</td>
+                <td>10054</td>
+                <td>67.6%</td>
+            </tr>
+                
+            <tr>
+                <td>INS_RTKFIXED</td>
+                <td>2649</td>
+                <td>17.8%</td>
+            </tr>
+                
+            <tr>
+                <td>INS_RTKFLOAT</td>
+                <td>1928</td>
+                <td>13.0%</td>
+            </tr>
+                
+            <tr>
+                <td>PROPAGATED</td>
+                <td>134</td>
+                <td>0.9%</td>
+            </tr>
+                
+            <tr>
+                <td>INS_PSRSP</td>
+                <td>111</td>
+                <td>0.7%</td>
+            </tr>
+                
+        </table>
+        <p><strong>INS固定解比率:</strong> <span class="fail">17.8%</span></p>
+            
+        <h2>5. 卫星可见性分析</h2>
+        <div class="chart">
+            <img src="satellite_time_series.png" alt="卫星数量时间序列"/>
+        </div>
+        <table>
+            <tr>
+                <th>指标</th>
+                <th>数值</th>
+            </tr>
+            <tr>
+                <td>平均可见卫星数</td>
+                <td>42.1</td>
+            </tr>
+            <tr>
+                <td>最小可见卫星数</td>
+                <td>13</td>
+            </tr>
+            <tr>
+                <td>最大可见卫星数</td>
+                <td>48</td>
+            </tr>
+        </table>
+            
+        <h2>6. DOP分析</h2>
+        <p><strong>数据源:</strong> $GPGSA(系统组合) ｜
+           <span style="color:#555;">DOP为接收机本地解算的几何精度因子(非卫星下发),
+           取决于卫星几何分布。</span></p>
+        <div class="chart">
+            <img src="dop_time_series.png" alt="DOP时间序列"/>
+        </div>
+        <table>
+            <tr>
+                <th>指标</th>
+                <th>数值</th>
+                <th>评估</th>
+            </tr>
+            <tr><td>平均PDOP</td><td>1.38</td><td>-</td></tr><tr><td>最小PDOP</td><td>1.10</td><td></td></tr><tr><td>最大PDOP</td><td>8.00</td><td></td></tr><tr><td>平均HDOP</td><td>0.65</td><td class="">优秀</td></tr><tr><td>最小HDOP</td><td>0.50</td><td></td></tr><tr><td>最大HDOP</td><td>7.60</td><td></td></tr><tr><td>平均VDOP</td><td>1.21</td><td>-</td></tr><tr><td>最小VDOP</td><td>0.90</td><td></td></tr><tr><td>最大VDOP</td><td>4.60</td><td></td></tr>
+        </table>
+            
+        <h2>7. 速度分析</h2>
+        <div class="chart">
+            <img src="velocity_time_series.png" alt="速度时间序列"/>
+        </div>
+        <table>
+            <tr>
+                <th>指标</th>
+                <th>数值</th>
+                <th>单位</th>
+            </tr>
+            <tr>
+                <td>平均速度</td>
+                <td>0.29</td>
+                <td>m/s</td>
+            </tr>
+            <tr>
+                <td>最大速度</td>
+                <td>2.83</td>
+                <td>m/s</td>
+            </tr>
+        </table>
+            
+        <h2>8. 载噪比 C/N0 分析<span class="badge-feature">特色(TRACKSTATA)</span></h2>
+        <div class="chart">
+            <img src="cn0_analysis.png" alt="C/N0载噪比分析"/>
+        </div>
+        <table>
+            <tr><th>指标</th><th>数值</th><th>说明</th></tr>
+            <tr><td>数据来源</td><td>TRACKSTATA</td><td>通道跟踪状态, 逐跟踪通道给出载噪比, 及时性好</td></tr>
+            <tr><td>统计历元数</td><td>7438</td><td>参与统计的观测历元</td></tr>
+            <tr><td>观测值总数</td><td>714064</td><td>全部通道的C/N0样本数</td></tr>
+            <tr><td>平均C/N0</td><td>39.6 dB-Hz</td><td>越高信号越好</td></tr>
+            <tr><td>中位数C/N0</td><td>41.2 dB-Hz</td><td>抗离群值, 反映典型水平</td></tr>
+            <tr><td>范围</td><td>12 ~ 53 dB-Hz</td><td>最低/最高观测值</td></tr>
+            <tr><td>低C/N0(&lt;35)占比</td><td>22.9%</td><td>占比越高遮挡/多路径越明显</td></tr>
+        </table>
+        <div class="note">
+            <b>解读指导(行业共识, 见 Kaplan《Understanding GPS》):</b><br/>
+            C/N0(载噪比)衡量卫星信号质量, 单位 dB-Hz, 越高越好。一般判据:
+            <b>&ge;45</b> 信号强(开阔天空); <b>35~45</b> 中等(正常可用);
+            <b>&lt;35</b> 偏弱, 易受遮挡/多路径影响; 接收机跟踪门限约 <b>25~28</b>, 低于此值易失锁。<br/>
+            <b>怎么看图:</b> 上图为全部观测值的C/N0分布直方图, 颜色按上述阈值区分(绿=强/黄=中/红=弱), 绿色占比越高越好;
+            下图为历元平均C/N0时间序列, 若某时段明显下坠, 说明该时段存在遮挡(楼宇/树荫/隧道)或强多路径。
+            分布直方图左偏(低值尾巴长)或时间序列出现深坑, 都提示观测环境欠佳。
+        </div>
+            
+        <h2>9. 位置分析</h2>
+        <div class="chart">
+            <img src="position_time_series.png" alt="位置时间序列"/>
+        </div>
+        <p>位置时间序列显示了接收机在Kinematic环境下的位置变化。从图中可以观察到位置的连续性和稳定性。</p>
+        
+        <h3>9.1 GNSS轨迹分析（ENU坐标）</h3>
+        <div class="chart">
+            <img src="gnss_enu_trajectory.png" alt="GNSS ENU轨迹"/>
+        </div>
+        <p>GNSS轨迹图使用ENU（East-North-Up）坐标系显示，按数据实际出现的解类型动态着色（本设备GNSS解类型见上分布图；不同产品命名可能有差异，如伪距差分北云称PSRDIFF、华测称SPPDIFF，含义相同）：绿色=RTK固定解(NARROW_INT)，蓝色=浮点解(NARROW_FLOAT)，红色=单点(SINGLE)，橙色=伪距差分(PSRDIFF/SPPDIFF)，紫色=PPP，灰色=无解(NONE)。图例中标注各类型数量及中文名。</p>
+        
+        <h3>9.2 INS轨迹分析（ENU坐标）</h3>
+        <div class="chart">
+            <img src="ins_enu_trajectory.png" alt="INS ENU轨迹"/>
+        </div>
+        <p>INS轨迹图使用ENU坐标系显示，组合惯导系统的定位轨迹。颜色对应：绿色(INS_RTKFIXED)、橙色(INS_RTKFLOAT)、蓝色(INS_PSRSP)、黄色(INS_PSRDIFF)、灰色(NONE)。</p>
+        
+        <h3>9.3 GNSS与INS轨迹对比</h3>
+        <div class="chart">
+            <img src="gnss_ins_combined_trajectory.png" alt="GNSS与INS轨迹对比"/>
+        </div>
+        <p>该图展示了GNSS纯定位轨迹（蓝色）与INS组合导航轨迹（红色）的叠加对比，可以分析两者之间的一致性和差异。</p>
+        
+        <h3>9.4 BESTGNSSPOSA解算状态时间序列</h3>
+        <div class="chart">
+            <img src="solution_status.png" alt="解算状态时间序列"/>
+        </div>
+        <p>该图展示了BESTGNSSPOSA报文中解算状态（sol stat）的时间序列变化，帮助分析定位过程中解算状态的稳定性。</p>
+            
+        <h2>10. 结论与建议</h2>
+        <div class="summary-table">
+            <table>
+                <tr>
+                    <th>评估指标</th>
+                    <th>状态</th>
+                    <th>说明</th>
+                </tr>
+            
+                <tr>
+                    <td>GNSS固定解比率</td>
+                    <td class="metric-warning">warning</td>
+                    <td>83.3%，基本满足要求</td>
+                </tr>
+            
+                <tr>
+                    <td>INS固定解比率</td>
+                    <td class="fail">fail</td>
+                    <td>17.8%，需要改善</td>
+                </tr>
+            
+                <tr>
+                    <td>卫星可见性</td>
+                    <td class="pass">pass</td>
+                    <td>平均42.1颗卫星，良好</td>
+                </tr>
+            
+                <tr>
+                    <td>DOP值</td>
+                    <td class="pass">pass</td>
+                    <td>平均HDOP 0.65，优秀</td>
+                </tr>
+            
+            </table>
+        </div>
+        
+        <h3>特色指标(设备专有字段)</h3>
+        <p style="font-size:13px;color:#555">以下为该设备特有的字段/能力评估, 每项附"测什么·怎么算好·怎么算坏"注释及依据。</p>
+        <div class="summary-table">
+            <table>
+                <tr><th>特色指标</th><th>实测值</th><th>状态</th><th>评级</th><th>注释(判断动态的什么/好坏)</th><th>依据</th></tr>
+                <tr><td>载体姿态</td><td>横滚3.34° 俯仰-0.04° 航向263.26°</td><td class="metric-info">提示</td><td>组合惯导特色: 实时输出Kinematic载体姿态(横滚/俯仰/航向)。纯GNSS无此能力。姿态连续性反映惯导跟踪状态。</td><td style="font-size:12px;color:#666">北云UG016 INSPVAX字段</td></tr><tr><td>水平位置精度σ</td><td>0.056 m</td><td class="metric-warning">警告</td><td>组合惯导特色: 位置标准差(接收机自估)。<=0.02m厘米级, 0.02~0.1m分米级, >0.1m米级。</td><td style="font-size:12px;color:#666">北云UG016 INSPVAX字段(阈值为工程经验)</td></tr><tr><td>航向角精度σ</td><td>0.328 deg</td><td class="metric-warning">警告</td><td>组合惯导特色: 航向角标准差, 判断姿态收敛。<=0.1deg高, 0.1~0.5一般, >0.5发散。</td><td style="font-size:12px;color:#666">北云UG016 INSPVAX字段(阈值为工程经验)</td></tr>
+            </table>
+        </div>
+        
+        <h3>建议</h3>
+        <ul>
+            <li>保持良好的卫星信号接收环境，确保天线无遮挡</li>
+            <li>定期检查RTK基准站连接状态</li>
+            <li>对于Kinematic应用，建议使用组合导航系统提高定位稳定性</li>
+            <li>根据应用场景调整采样率，平衡精度和数据量</li>
+        </ul>
+    </div>
+</body>
+</html>
+        
