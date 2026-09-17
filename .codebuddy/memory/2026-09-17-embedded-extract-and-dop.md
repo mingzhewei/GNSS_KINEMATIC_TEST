@@ -87,3 +87,32 @@
 - 现仓库含: 源码 + by_data/ + huace_data/ + by_manual/ + huace_manual/ + .codebuddy/ (共153文件)。
 - 单文件最大82.36MB(<100MB硬限制), 仅触发50MB警告(GH001提示可用Git LFS), 未被拒收。
 - 注: 数据/手册/私有记忆笔记现已在公开互联网上可见; 后续若需撤回, 需重写历史(filter-repo)或删库。
+
+---
+
+## 重要修正：华测 #BESTDOPSA 字段顺序（2026-09-17，用户指出+手册证实）
+
+### 错误与纠正
+- 曾误以为 #BESTDOPSA 字段为 PDOP/GDOP/HDOP/VDOP/TDOP，把 f2[3] 当 VDOP、f2[4] 当 TDOP。
+- **手册表3-36(M7系列V2.7 第80页)证实**: #BESTDOPSA 数据字段(分号后)严格为
+  [0]pdop [1]gdop [2]hdop [3]tdop [4]htdop [5]截止高度角 [6]卫星数+各PRN...
+  **本报文没有 VDOP！** f2[3]=TDOP(≈0.45), f2[4]=HTDOP(≈0.86)。
+- VDOP 唯一来源 = $GNGSA 尾部三字段 PDOP/HDOP/VDOP(手册表3-3 第33页, 第7字段=垂直精度因子)。
+
+### 两源频率/容量对比(实测 0916星扬上午.log)
+- #BESTDOPSA: 17830条 = 历元数, 10Hz, 每周期1条; DOP为4位小数(高精度); 含GDOP/TDOP/HTDOP/卫星列表。
+- $GNGSA: 106390条 ≈ 历元×6, 每周期6条(每星座1条), 但同周期6条DOP值完全相同;
+  DOP仅1位小数(舍入版); 是唯一含VDOP者。
+- **两源同源**: 逐周期对齐 PDOP 0.8071↔0.8, HDOP 0.4114↔0.4, 完全一致(GSA是BESTDOPSA的舍入版)。
+
+### 最终策略(已落地 analyze_dop / _plot_dop_time_series / HTML / MD)
+- 同频(均10Hz)满足"混合须同频"约束, 按字段各司其职:
+  PDOP/HDOP 取 #BESTDOPSA(高精度); VDOP 取 $GNGSA组合条(唯一来源);
+  另附 BESTDOPSA 独有 GDOP/TDOP/HTDOP。
+- 回退: 无BESTDOPSA时三件套全用$GNGSA; 再无则$GNGGA仅HDOP。
+- 实测结果(上午): PDOP0.758 HDOP0.388(优秀) VDOP0.653 GDOP0.865 TDOP0.416 HTDOP0.804。
+  GDOP≥PDOP≥HDOP, TDOP独立低位, 数值关系自洽。
+- 已提交推送 f849330。
+
+### 教训
+字段无字母标签的报文, 绝不能靠数值"看起来合理"推断字段含义; 必须查手册原文字段表逐项核对。
