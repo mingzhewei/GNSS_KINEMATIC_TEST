@@ -1076,11 +1076,19 @@ class GPSKinematicAnalyzer:
         return self._cache_gngsa
 
     def parse_bestdopsa(self):
-        """解析华测 #BESTDOPSA 最佳DOP报文(权威DOP源, 含VDOP)
+        """解析华测 #BESTDOPSA 最佳DOP报文(权威DOP源, 但【不含VDOP】)
 
-        依据手册表3-36: 数据字段(分号后)
-        [0]PDOP [1]GDOP [2]HDOP [3]VDOP [4]TDOP [5]截止高度角 [6]卫星数 ...
-        (实测样本: 0.7621,0.8756,0.4163,0.4312,0.8475,0.0,44,... -> PDOP/GDOP/HDOP/VDOP/TDOP)
+        依据手册表3-36(M7系列V2.7 第80页), 数据字段(分号后)严格为:
+        [0]pdop 位置精度因子
+        [1]gdop 几何精度因子
+        [2]hdop 水平精度因子
+        [3]tdop 时间精度因子(假设3D位置已知、仅钟差未知)  <- 注意: 是TDOP不是VDOP
+        [4]htdop 水平位置+时间精度因子
+        [5]截止高度角(elev mask)
+        [6]卫星数, 之后为各卫星PRN...
+        实测样本: 0.8071,0.9247,0.4114,0.4514,0.8627,0.0,43,...
+                  -> pdop=0.8071 gdop=0.9247 hdop=0.4114 tdop=0.4514 htdop=0.8627
+        【重要】本报文无VDOP字段; VDOP 须从 $GNGSA(表3-3 第7字段=垂直精度因子)获取。
         数据来自 parsed_data(已被嵌入式锚点+校验提取补全, 含二进制切断的报文)。
         """
         if hasattr(self, '_cache_bestdopsa'):
@@ -1100,8 +1108,8 @@ class GPSKinematicAnalyzer:
                     'pdop': float(f2[0]),
                     'gdop': float(f2[1]),
                     'hdop': float(f2[2]),
-                    'vdop': float(f2[3]),
-                    'tdop': float(f2[4]) if len(f2) > 4 else None,
+                    'tdop': float(f2[3]),                       # f2[3]=TDOP(原误作VDOP)
+                    'htdop': float(f2[4]) if len(f2) > 4 else None,  # f2[4]=HTDOP(原误作TDOP)
                 })
             except (ValueError, IndexError):
                 continue
@@ -1649,43 +1657,72 @@ class GPSKinematicAnalyzer:
         """
         print("分析DOP值...")
 
-        bestdops = self.parse_bestdopsa()
-        gngsa = self.parse_gngsa_combined()
+        bestdops = self.parse_bestdopsa()   # PDOP/GDOP/HDOP/TDOP/HTDOP(高精度4位小数, 无VDOP)
+        gngsa = self.parse_gngsa_combined() # PDOP/HDOP/VDOP(1位小数, 含VDOP)
         gpgga_data = self.parse_gpgga()
 
-        dop_src = None
-        pdop_l, hdop_l, vdop_l = [], [], []
+        def _stats(lst):
+            return (statistics.mean(lst), min(lst), max(lst)) if lst else (None, None, None)
+        res = {}
+
         if bestdops:
-            dop_src = '#BESTDOPSA(权威)'
-            pdop_l = [d['pdop'] for d in bestdops if d.get('pdop', 0) > 0]
-            hdop_l = [d['hdop'] for d in bestdops if d.get('hdop', 0) > 0]
-            vdop_l = [d['vdop'] for d in bestdops if d.get('vdop', 0) > 0]
+            # 【分字段混合, 两源同频(均10Hz)且同源(实测PDOP/HDOP逐周期一致)】
+            #   PDOP/HDOP 取 #BESTDOPSA(精度高, 权威); VDOP 取 $GNGSA(BESTDOPSA无此字段, 唯一来源)
+            #   另附 BESTDOPSA 独有的 GDOP/TDOP/HTDOP 作参考。
+            dop_src = 'PDOP/HDOP=#BESTDOPSA, VDOP=$GNGSA(同频混合)'
+            res['dop_source'] = dop_src
+            res['note'] = ('#BESTDOPSA不含VDOP(表3-36: PDOP/GDOP/HDOP/TDOP/HTDOP); '
+                           'VDOP取自$GNGSA(表3-3第7字段=垂直精度因子)。两报文同为10Hz同频, '
+                           '且PDOP/HDOP数值同源(GSA为1位小数舍入版), 故按字段混合使用。')
+            pd_l = [d['pdop'] for d in bestdops if d.get('pdop', 0) > 0]
+            hd_l = [d['hdop'] for d in bestdops if d.get('hdop', 0) > 0]
+            vd_l = [g['vdop'] for g in gngsa if g.get('vdop', 0) > 0]
+            res['timestamps'] = [d['timestamp'] for d in bestdops if d.get('pdop', 0) > 0]
+            for name, lst in (('pdop', pd_l), ('hdop', hd_l), ('vdop', vd_l),
+                              ('gdop', [d['gdop'] for d in bestdops if d.get('gdop', 0) > 0]),
+                              ('tdop', [d['tdop'] for d in bestdops if d.get('tdop', 0) > 0]),
+                              ('htdop', [d['htdop'] for d in bestdops if d.get('htdop') and d['htdop'] > 0])):
+                a, mn, mx = _stats(lst)
+                if a is not None:
+                    res[f'average_{name}'] = a
+                    res[f'min_{name}'] = mn
+                    res[f'max_{name}'] = mx
+                    res[f'{name}_values'] = lst
+            print(f"DOP数据源: {dop_src}")
+            for name in ('pdop', 'hdop', 'vdop', 'gdop', 'tdop', 'htdop'):
+                if f'average_{name}' in res:
+                    print(f"平均{name.upper()}: {res[f'average_{name}']:.3f} "
+                          f"(最小{res[f'min_{name}']:.3f} 最大{res[f'max_{name}']:.3f})")
         elif gngsa:
+            # 无BESTDOPSA时, 三件套全部回退 $GNGSA(组合条, 含VDOP)
             dop_src = '$GNGSA(多星座组合)'
-            pdop_l = [d['pdop'] for d in gngsa if d.get('pdop', 0) > 0]
-            hdop_l = [d['hdop'] for d in gngsa if d.get('hdop', 0) > 0]
-            vdop_l = [d['vdop'] for d in gngsa if d.get('vdop', 0) > 0]
+            res['dop_source'] = dop_src
+            for name in ('pdop', 'hdop', 'vdop'):
+                lst = [g[name] for g in gngsa if g.get(name, 0) > 0]
+                a, mn, mx = _stats(lst)
+                if a is not None:
+                    res[f'average_{name}'] = a
+                    res[f'min_{name}'] = mn
+                    res[f'max_{name}'] = mx
+                    res[f'{name}_values'] = lst
+            print(f"DOP数据源: {dop_src}")
+            for name in ('pdop', 'hdop', 'vdop'):
+                if f'average_{name}' in res:
+                    print(f"平均{name.upper()}: {res[f'average_{name}']:.2f} "
+                          f"(最小{res[f'min_{name}']:.2f} 最大{res[f'max_{name}']:.2f})")
         elif gpgga_data:
             dop_src = '$GNGGA(仅HDOP)'
-            hdop_l = [d['hdop'] for d in gpgga_data if d.get('hdop', 0) > 0]
+            res['dop_source'] = dop_src
+            lst = [d['hdop'] for d in gpgga_data if d.get('hdop', 0) > 0]
+            a, mn, mx = _stats(lst)
+            if a is not None:
+                res['average_hdop'] = a; res['min_hdop'] = mn; res['max_hdop'] = mx
+                res['hdop_values'] = lst
+            print(f"DOP数据源: {dop_src}, 平均HDOP: {a:.2f}")
         else:
             print("未找到DOP数据")
             return
 
-        print(f"DOP数据源: {dop_src}")
-
-        def _stats(lst):
-            return (statistics.mean(lst), min(lst), max(lst)) if lst else (None, None, None)
-
-        res = {'dop_source': dop_src}
-        for name, lst in (('pdop', pdop_l), ('hdop', hdop_l), ('vdop', vdop_l)):
-            a, mn, mx = _stats(lst)
-            if a is not None:
-                res[f'average_{name}'] = a
-                res[f'min_{name}'] = mn
-                res[f'max_{name}'] = mx
-                res[f'{name}_values'] = lst
-                print(f"平均{name.upper()}: {a:.2f} (最小{mn:.2f} 最大{mx:.2f})")
         self.analysis_results['dop'] = res
 
     def analyze_velocity(self):
@@ -1934,48 +1971,72 @@ class GPSKinematicAnalyzer:
             print(f"保存卫星数量时间序列图: {output_file}")
     
     def _plot_dop_time_series(self):
-        """绘制DOP时间序列 - PDOP/HDOP/VDOP 三条曲线(数据源自适应)
+        """绘制DOP时间序列 (分字段混合, 数据源自适应)
 
-        优先 #BESTDOPSA(权威), 回退 $GNGSA组合, 再回退 $GNGGA(仅HDOP)。
+        常规情形: PDOP/GDOP/HDOP/TDOP/HTDOP 来自 #BESTDOPSA(带时间戳),
+                  VDOP 来自 $GNGSA(组合条, 无时间戳, 用与BESTDOPSA同频的序号轴对齐)。
+        回退: 三件套全部来自 $GNGSA(序号轴), 或仅 $GNGGA 的 HDOP。
         """
         dop = self.analysis_results.get('dop', {})
         src = dop.get('dop_source', '')
-        # 取带时间戳的序列
-        series = None
-        if src.startswith('#BESTDOPSA'):
-            series = self.parse_bestdopsa()
-        elif src.startswith('$GNGSA'):
-            series = self.parse_gngsa_combined()
-        elif src.startswith('$GNGGA'):
-            series = self.parse_gpgga()
-        if not series:
-            return
-
-        # GNGSA组合无时间戳 -> 用序号作横轴; 其它用相对时间
-        has_ts = series[0].get('timestamp') is not None
-        if has_ts:
-            t0 = min(d['timestamp'] for d in series)
-            x = [d['timestamp'] - t0 for d in series]
-            xlabel = 'Time (seconds)'
-        else:
-            x = list(range(len(series)))
-            xlabel = 'Epoch index'
 
         plt.figure(figsize=(12, 6))
         plotted = False
-        for key, color in (('pdop', '#1f77b4'), ('hdop', '#2ca02c'), ('vdop', '#d62728')):
-            ys = [d.get(key) for d in series if d.get(key) is not None and d.get(key) > 0]
+
+        if '#BESTDOPSA' in src:
+            # 主源 BESTDOPSA(带时间戳)
+            series = self.parse_bestdopsa()
+            if not series:
+                plt.close(); return
+            t0 = min(d['timestamp'] for d in series)
+            x = [d['timestamp'] - t0 for d in series]
+            for key, color in (('pdop', '#1f77b4'), ('hdop', '#2ca02c'),
+                               ('gdop', '#9467bd'), ('tdop', '#8c564b'), ('htdop', '#7f7f7f')):
+                ys = [d.get(key) for d in series]
+                if any(v and v > 0 for v in ys):
+                    plt.plot(x, [v if v else float('nan') for v in ys],
+                             label=key.upper(), color=color, linewidth=1)
+                    plotted = True
+            # VDOP 来自 GNGSA(组合条, 无时间戳): 与BESTDOPSA同频10Hz, 用序号->相对时间对齐
+            gsa = self.parse_gngsa_combined()
+            if gsa:
+                vd = [g['vdop'] for g in gsa if g.get('vdop', 0) > 0]
+                if vd:
+                    # 同频对齐: 用与x相同的时间跨度按序号均匀映射
+                    xv = [x[0] + (x[-1]-x[0]) * i / max(len(vd)-1, 1) for i in range(len(vd))]
+                    plt.plot(xv, vd, label='VDOP(GSA)', color='#d62728', linewidth=1)
+                    plotted = True
+            xlabel = 'Time (seconds)'
+        elif '$GNGSA' in src:
+            series = self.parse_gngsa_combined()
+            if not series:
+                plt.close(); return
+            x = list(range(len(series)))
+            for key, color in (('pdop', '#1f77b4'), ('hdop', '#2ca02c'), ('vdop', '#d62728')):
+                ys = [g.get(key) for g in series if g.get(key) is not None and g.get(key) > 0]
+                if ys:
+                    plt.plot(x[:len(ys)], ys, label=key.upper(), color=color, linewidth=1)
+                    plotted = True
+            xlabel = 'Epoch index'
+        else:  # $GNGGA 仅HDOP
+            series = self.parse_gpgga()
+            if not series:
+                plt.close(); return
+            t0 = min(d['timestamp'] for d in series)
+            x = [d['timestamp'] - t0 for d in series]
+            ys = [d['hdop'] for d in series if d.get('hdop', 0) > 0]
             if ys:
-                xs = x[:len(ys)]
-                plt.plot(xs, ys, label=key.upper(), color=color, linewidth=1)
+                plt.plot(x[:len(ys)], ys, label='HDOP', color='#2ca02c', linewidth=1)
                 plotted = True
+            xlabel = 'Time (seconds)'
+
         if not plotted:
             plt.close()
             return
         plt.title(f'DOP Time Series ({src})')
         plt.xlabel(xlabel)
         plt.ylabel('DOP')
-        plt.legend()
+        plt.legend(fontsize=8)
         plt.grid(True)
         plt.tight_layout()
         output_file = os.path.join(self.output_dir, 'dop_time_series.png')
@@ -2665,12 +2726,17 @@ class GPSKinematicAnalyzer:
                 return (f'<tr><td>平均{cn}</td><td>{a:.2f}</td>{evtd}</tr>'
                         f'<tr><td>最小{cn}</td><td>{mn:.2f}</td><td></td></tr>'
                         f'<tr><td>最大{cn}</td><td>{mx:.2f}</td><td></td></tr>')
-            rows = _row('PDOP', 'pdop') + _row('HDOP', 'hdop') + _row('VDOP', 'vdop')
+            note = dop.get('note', '')
+            # 主三件套 + BESTDOPSA独有的 GDOP/TDOP/HTDOP(若有)
+            rows = (_row('PDOP', 'pdop') + _row('HDOP', 'hdop') + _row('VDOP', 'vdop')
+                    + _row('GDOP', 'gdop') + _row('TDOP', 'tdop') + _row('HTDOP', 'htdop'))
+            note_html = f'<p style="font-size:12px;color:#888;">{note}</p>' if note else ''
             html_content += f"""
         <h2>5. DOP分析</h2>
         <p><strong>数据源:</strong> {src} ｜
            <span style="color:#555;">DOP为接收机本地解算的几何精度因子(非卫星下发);
            多星座时按NMEA共识取"组合"DOP(参与解算的全部卫星几何), 星座越多DOP越小。</span></p>
+        {note_html}
         <div class="chart">
             <img src="dop_time_series.png" alt="DOP时间序列"/>
         </div>
@@ -2996,12 +3062,15 @@ class GPSKinematicAnalyzer:
                 return (f'| 平均{cn} | {a:.2f} | {ev} |\n'
                         f'| 最小{cn} | {mn:.2f} | |\n'
                         f'| 最大{cn} | {mx:.2f} | |\n')
-            mrows = _mrow('PDOP', 'pdop') + _mrow('HDOP', 'hdop') + _mrow('VDOP', 'vdop')
+            note = dop.get('note', '')
+            mrows = (_mrow('PDOP', 'pdop') + _mrow('HDOP', 'hdop') + _mrow('VDOP', 'vdop')
+                     + _mrow('GDOP', 'gdop') + _mrow('TDOP', 'tdop') + _mrow('HTDOP', 'htdop'))
+            note_md = ('\n> ' + note + '\n') if note else ''
             md_content += f"""
 ## 5. DOP分析
 
 **数据源**: {src}（DOP为接收机本地解算的几何精度因子，非卫星下发；多星座取组合DOP，星座越多DOP越小）
-
+{note_md}
 ![DOP时间序列](dop_time_series.png)
 
 | 指标 | 数值 | 评估 |

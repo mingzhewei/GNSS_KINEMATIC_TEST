@@ -78,3 +78,12 @@
 - .gitignore 排除(体积极大不上传): by_data/ huace_data/ by_manual/ huace_manual/
   .codebuddy/ __pycache__/ .mypy_cache/ _fonttest.png _*.py
 - 推送方式: https + Windows 凭据管理器已存 GitHub 登录(无 gh CLI, 禁用 GIT_TERMINAL_PROMPT)
+
+---
+
+## GitHub 追加：数据/手册/笔记已上传（2026-09-17，用户确认公开）
+
+- 用户确认仓库为 Public 后, 放开 .gitignore, 追加提交 27693ea 并推送成功。
+- 现仓库含: 源码 + by_data/ + huace_data/ + by_manual/ + huace_manual/ + .codebuddy/ (共153文件)。
+- 单文件最大82.36MB(<100MB硬限制), 仅触发50MB警告(GH001提示可用Git LFS), 未被拒收。
+- 注: 数据/手册/私有记忆笔记现已在公开互联网上可见; 后续若需撤回, 需重写历史(filter-repo)或删库。
