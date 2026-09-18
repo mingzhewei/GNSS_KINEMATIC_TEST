@@ -1116,51 +1116,44 @@ class GPSKinematicAnalyzer:
         self._cache_bestdopsa = data
         return data
 
-    def parse_bestgnss_posa(self):
-        """解析BESTGNSSPOSA报文
+    def parse_gnss_pos(self):
+        """解析华测 GNSS 位置报文(主定位源, 提供坐标/解类型/卫星数)
 
-        根据UG016规范第4.2.2节,BESTGNSSPOSA数据部分格式:
-        [0] Sol Status - 解算状态 (SOL_COMPUTED等)
-        [1] Pos Type - 位置类型 (NARROW_INT等)
-        [2] Lat - 纬度
-        [3] Lon - 经度
-        [4] Hgt - 海拔高
-        [5] Undulation - 高程异常值
-        [6] Datum ID - 坐标系ID
-        [7] Lat σ - 纬度标准差
-        [8] Lon σ - 经度标准差
-        [9] Hgt σ - 高度标准差
-        [10] Stn ID - 差分站台ID
-        [11] Diff_age - 差分龄期
-        [12] Sol_age - 解算时间
-        [13] #SVs - 跟踪卫星数
-        [14] #solnSVs - 参与解算卫星数
-        ...
+        【华测实际报文】华测无 BESTGNSSPOSA, 主源为:
+          1. <BESTP 缩写格式(10Hz, 主源, M7手册表3-38)
+          2. #BESTPA 标准ASCII(回退, 字段同表3-38)
+        数据字段(空格/逗号分隔, 顺序一致):
+        [0]解算状态 [1]定位类型(Pos Type) [2]坐标系 [3]Reserved
+        [4]纬度 [5]经度 [6]海拔高 [7]高程异常
+        [8]纬度σ [9]经度σ [10]高程σ [11]差分龄期 [12]解算时间
+        [13]#SVs跟踪卫星数 [14]#solnSVs参与解算卫星数
         """
-        if hasattr(self, '_cache_bestgnssposa'):
-            return self._cache_bestgnssposa
+        if hasattr(self, '_cache_gnsspos'):
+            return self._cache_gnsspos
 
-        # 华测: 优先使用 <BESTP 缩写格式(10Hz高密度), 其字段与 #BESTPOSA 语义一致且时间分辨率高
+        # 华测: 优先使用 <BESTP 缩写格式(10Hz高密度), 字段语义同 #BESTPA(表3-38)且时间分辨率高
         bestp_abbrev = self.parse_bestp_abbrev()
         if bestp_abbrev:
-            self._cache_bestgnssposa = bestp_abbrev
+            self._cache_gnsspos = bestp_abbrev
             return bestp_abbrev
 
         # 回退: 标准 BESTP ASCII 报文(新采集格式, 统一走 parse_bestpa_ascii)
         data = self.parse_bestpa_ascii()
         if data:
-            self._cache_bestgnssposa = data
+            self._cache_gnsspos = data
             return data
         return []
     
-    def parse_bestposa(self):
-        """解析BESTPOSA报文，提取解算状态（sol stat）
+    def parse_solution_status(self):
+        """解析华测解算状态(sol stat)时间序列
 
-        华测适配: 主数据源是 <BESTP 缩写格式报文(10Hz), 回退 #BESTPOSA(低密度)。
-        两者解状态字段语义一致(协议手册表3-38/3-39)。
+        【华测实际报文】解算状态取自与位置同源的:
+          1. <BESTP 缩写格式(10Hz, 主源, M7手册表3-38)
+          2. #BESTPA 标准ASCII(回退)
+        注: #BESTPOSA(1Hz)仅用于基站ID/差分龄期校验, 不作解算状态主源。
         """
-        if hasattr(self, '_cache_bestposa'):
-            return self._cache_bestposa
+        if hasattr(self, '_cache_solution_status'):
+            return self._cache_solution_status
 
         # 华测: 优先复用 <BESTP 缩写格式(高密度主源)
         bestp = self.parse_bestp_abbrev()
@@ -1171,7 +1164,7 @@ class GPSKinematicAnalyzer:
                 'sol_stat': -1,
                 'pos_type': d.get('pos_type', '')
             } for d in bestp]
-            self._cache_bestposa = data
+            self._cache_solution_status = data
             return data
 
         # 回退: 标准 #BESTPA ASCII 报文(新采集格式)
@@ -1183,8 +1176,9 @@ class GPSKinematicAnalyzer:
                 'sol_stat': -1,
                 'pos_type': d.get('pos_type', '')
             } for d in bestpa]
-            self._cache_bestposa = data
+            self._cache_solution_status = data
             return data
+        self._cache_solution_status = []
         return []
 
     def parse_bestpa_ascii(self):
@@ -1452,7 +1446,7 @@ class GPSKinematicAnalyzer:
     def analyze_solution_type(self):
         """分析解类型分布
 
-        根据UG016规范:
+        根据 M7手册(表3-38/3-39, 数据源<BESTP/#BESTPA):
         - Sol Status (解算状态): 表示解算是否成功 (SOL_COMPUTED等)
         - Pos Type (位置类型): 表示定位模式和精度等级 (NARROW_INT等)
 
@@ -1461,7 +1455,7 @@ class GPSKinematicAnalyzer:
         print("分析解类型分布...")
 
         # 分析GNSS位置类型
-        bestgnss_data = self.parse_bestgnss_posa()
+        bestgnss_data = self.parse_gnss_pos()
         gnss_type_count = {}
         gnss_sol_status_count = {}
 
@@ -1678,8 +1672,8 @@ class GPSKinematicAnalyzer:
         """生成图表"""
         print("生成分析图表...")
         
-        # 位置时间序列图（GNSS - BESTGNSSPOSA）
-        bestgnss_data = self.parse_bestgnss_posa()
+        # 位置时间序列图（GNSS - <BESTP/#BESTPA, 华测实际位置主源）
+        bestgnss_data = self.parse_gnss_pos()
         if bestgnss_data:
             self._plot_position_time_series(bestgnss_data, 'gnss')
         
@@ -1704,11 +1698,11 @@ class GPSKinematicAnalyzer:
             self._plot_gnss_enu_trajectory(bestgnss_data)
         
         # 解算状态时间序列图（华测: <BESTP 主源的sol stat）
-        bestpos_data = self.parse_bestposa()
+        bestpos_data = self.parse_solution_status()
         if bestpos_data:
             self._plot_solution_status(bestpos_data)
         else:
-            print("无解算状态数据(<BESTP/#BESTPOSA均无)，跳过解算状态图")
+            print("无解算状态数据(<BESTP/#BESTPA均无)，跳过解算状态图")
 
         # C/N0载噪比图(华测特色: RANGEA原始观测值)
         if self.analysis_results.get('cn0', {}).get('available'):
@@ -2247,10 +2241,10 @@ class GPSKinematicAnalyzer:
         print(f"保存GNSS ENU轨迹图: {output_file}")
     
     def _plot_solution_status(self, data):
-        """绘制BESTPOSA解算状态时间序列图
+        """绘制解算状态时间序列图(数据源<BESTP/#BESTPA)
         
         Args:
-            data: BESTPOSA解析数据列表
+            data: 解算状态数据列表(来自<BESTP/#BESTPA)
         """
         print("绘制解算状态时间序列图...")
         
@@ -2751,7 +2745,7 @@ class GPSKinematicAnalyzer:
         # 位置分析(编号自适应: 若无C/N0特色章则前移)
         _pos_no = 8 if self.analysis_results.get('cn0', {}).get('available') else 7
         _conc_no = _pos_no + 1
-        bestgnss_data = self.parse_bestgnss_posa()
+        bestgnss_data = self.parse_gnss_pos()
         if bestgnss_data:
             html_content += f"""
         <h2>{_pos_no}. 位置分析</h2>
@@ -3078,7 +3072,7 @@ class GPSKinematicAnalyzer:
         # 位置分析(编号自适应: 若无C/N0特色章则前移)
         _pos_no = 8 if self.analysis_results.get('cn0', {}).get('available') else 7
         _conc_no = _pos_no + 1
-        bestgnss_data = self.parse_bestgnss_posa()
+        bestgnss_data = self.parse_gnss_pos()
         if bestgnss_data:
             md_content += f"""
 ## {_pos_no}. 位置分析
@@ -3383,7 +3377,7 @@ def run_with_gui():
 3. 点击"开始分析"，结果保存在与输入文件同名的目录中
 
 特色字段：#ENVSTATUSA / #RANGEA 为华测独有，报告中标"特色"。
-用户准则：华测为纯GNSS，定位以 BESTPA/BESTGNSSPOSA 为准；
+用户准则：华测为纯GNSS，定位以 <BESTP(缩写10Hz)/#BESTPA 为准(无BESTGNSSPOSA)；
 带时间戳的以时间戳为准。
 
 异常点说明：

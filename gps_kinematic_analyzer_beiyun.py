@@ -1307,17 +1307,27 @@ class GPSKinematicAnalyzer:
         if not inspvax_data:
             print("无INSPVAXA数据, 跳过速度时间序列图")
             return
-        timestamps = [d['timestamp'] for d in inspvax_data]
-        if not timestamps:
-            return
-        min_time = min(timestamps)
-        rel = [t - min_time for t in timestamps]
+        # 修复(2026-09-18):
+        # (1) 与 analyze_velocity 同口径: 仅统计 INS 有效解(非NONE)的速度,
+        #     NONE 历元速度为0, 若不剔除会把曲线压成"前段全0", 误导。
+        # (2) 保留真实时间轴: 无效段用 NaN 断线(显示为空白缺口),
+        #     而不是删除后把后续点前移, 避免时间轴压缩/错位。
+        nan = float('nan')
+        t0 = inspvax_data[0]['timestamp']
+        rel = [d['timestamp'] - t0 for d in inspvax_data]
+
+        def _valid(d):
+            pt = (d.get('pos_type') or d.get('solution_type') or '').strip().upper()
+            if pt in ('NONE', '', 'INS_INACTIVE'):
+                return False
+            return d.get('valid_coord', True)
+
         speeds = [math.sqrt(d['velocity_north']**2 + d['velocity_east']**2 + d['velocity_up']**2)
-                  for d in inspvax_data]
+                  if _valid(d) else nan for d in inspvax_data]
 
         plt.figure(figsize=(12, 6))
         plt.plot(rel, speeds, color='#1f77b4', linewidth=0.8)
-        plt.title('Speed Time Series (INSPVAXA)')
+        plt.title('Speed Time Series (INSPVAXA, INS valid solution)')
         plt.xlabel('Time (seconds)')
         plt.ylabel('Speed (m/s)')
         plt.grid(True)
@@ -1325,7 +1335,7 @@ class GPSKinematicAnalyzer:
         output_file = os.path.join(self.output_dir, 'velocity_time_series.png')
         plt.savefig(output_file)
         plt.close()
-        print(f"保存速度时间序列图: {output_file}")
+        print(f"保存速度时间序列图(有效解+NaN断线): {output_file}")
 
     def _detect_anomalies(self, data, speed_threshold):
         """检测异常跳跃点: 相邻两有效坐标点相对速度超过阈值即判定。
@@ -1515,48 +1525,59 @@ class GPSKinematicAnalyzer:
         print(f"保存C/N0载噪比图: {out}")
 
     def _plot_position_time_series(self, data, source='gnss'):
-        """绘制位置时间序列图
-        
+        """绘制位置时间序列图(保留真实时间轴, 无效坐标段NaN断线)
+
+        修复(2026-09-18): 原实现先过滤 valid_coord 再画, 会把无效坐标段
+        (INSPVAXA 起始约440s的 NONE 等待段)直接删除, 使时间轴被压缩、起点
+        右移、时长描述错误。现改为:
+          - 横轴用全部历元的真实 GPS 时间(相对首个历元), 不压缩;
+          - 无效坐标段(无解/坐标为0)用 NaN 填充, 图上显示为空白缺口,
+            既不误导又能看到"等待解算收敛"的真实时长。
         Args:
             data: 位置数据列表
             source: 数据源类型 'gnss' 或 'ins'
         """
-        # 过滤无有效坐标的记录(无解时坐标为0)
-        data = [d for d in data if d.get('valid_coord', True)]
-        timestamps = [d['timestamp'] for d in data]
-        lats = [d['latitude'] for d in data]
-        lons = [d['longitude'] for d in data]
-        heights = [d['height'] for d in data]
-        
-        # 使用相对时间
-        if timestamps:
-            min_time = min(timestamps)
-            relative_times = [t - min_time for t in timestamps]
-        else:
-            relative_times = timestamps
-        
+        if not data:
+            print(f"无{source}位置数据, 跳过位置时间序列图")
+            return
+
+        nan = float('nan')
+        # 时间轴: 全部历元(含无效段), 反映真实时间跨度
+        t0 = data[0]['timestamp']
+        relative_times = [d['timestamp'] - t0 for d in data]
+        # 无效坐标(无解/坐标为0) -> NaN 断线, 保留时间轴不被压缩
+        def _series(key):
+            return [d[key] if d.get('valid_coord', True) else nan for d in data]
+        lats = _series('latitude')
+        lons = _series('longitude')
+        heights = _series('height')
+        src_name = 'BESTGNSSPOSA' if source == 'gnss' else 'INSPVAXA'
+
         plt.figure(figsize=(12, 8))
-        
+
         plt.subplot(3, 1, 1)
         plt.plot(relative_times, lats)
-        plt.title('Latitude Time Series')
+        plt.title(f'Latitude Time Series ({src_name})')
         plt.xlabel('Time (seconds)')
         plt.ylabel('Latitude (degrees)')
-        
+        plt.grid(True, alpha=0.3)
+
         plt.subplot(3, 1, 2)
         plt.plot(relative_times, lons)
-        plt.title('Longitude Time Series')
+        plt.title(f'Longitude Time Series ({src_name})')
         plt.xlabel('Time (seconds)')
         plt.ylabel('Longitude (degrees)')
-        
+        plt.grid(True, alpha=0.3)
+
         plt.subplot(3, 1, 3)
         plt.plot(relative_times, heights)
-        plt.title('Height Time Series')
+        plt.title(f'Height Time Series ({src_name})')
         plt.xlabel('Time (seconds)')
         plt.ylabel('Height (meters)')
-        
+        plt.grid(True, alpha=0.3)
+
         plt.tight_layout()
-        
+
         # 根据数据源生成不同的文件名
         if source == 'gnss':
             output_file = os.path.join(self.output_dir, 'position_time_series_gnss.png')
@@ -1564,7 +1585,7 @@ class GPSKinematicAnalyzer:
             output_file = os.path.join(self.output_dir, 'position_time_series_ins.png')
         plt.savefig(output_file)
         plt.close()
-        print(f"保存位置时间序列图: {output_file}")
+        print(f"保存位置时间序列图(真实时间轴+NaN断线): {output_file}")
     
     def _plot_gnss_solution_type_distribution(self):
         """绘制GNSS解类型分布图"""
@@ -2278,30 +2299,36 @@ class GPSKinematicAnalyzer:
         if bestgnss_data:
             html_content += f"""
         <h2>{_pos_no}. 位置分析</h2>
+        <h3>{_pos_no}.1 GNSS位置时间序列</h3>
         <div class="chart">
-            <img src="position_time_series_gnss.png" alt="位置时间序列"/>
+            <img src="position_time_series_gnss.png" alt="GNSS位置时间序列"/>
         </div>
-        <p>位置时间序列显示了接收机在Kinematic环境下的位置变化。从图中可以观察到位置的连续性和稳定性。</p>
+        <p>GNSS位置时间序列(数据源 BESTGNSSPOSA)显示了接收机在Kinematic环境下的位置变化。横轴为真实 GPS 时间(相对首历元), 无解(NONE)段以空白缺口显示, 不压缩时间轴。</p>
+        <h3>{_pos_no}.2 INS位置时间序列</h3>
+        <div class="chart">
+            <img src="position_time_series_ins.png" alt="INS位置时间序列"/>
+        </div>
+        <p>INS位置时间序列(数据源 INSPVAXA)显示了组合惯导的位置变化。横轴为真实 GPS 时间; 设备上电后 INS 需一段对准/收敛时间(本段数据起始约440s)才有有效解, 该等待段及中途无解段以空白缺口显示, 不压缩时间轴。</p>
         
-        <h3>{_pos_no}.1 GNSS轨迹分析（ENU坐标）</h3>
+        <h3>{_pos_no}.3 GNSS轨迹分析（ENU坐标）</h3>
         <div class="chart">
             <img src="gnss_enu_trajectory.png" alt="GNSS ENU轨迹"/>
         </div>
         <p>GNSS轨迹图使用ENU（East-North-Up）坐标系显示，按数据实际出现的解类型动态着色（本设备GNSS解类型见上分布图；不同产品命名可能有差异，如伪距差分北云称PSRDIFF、华测称SPPDIFF，含义相同）：绿色=RTK固定解(NARROW_INT)，蓝色=浮点解(NARROW_FLOAT)，红色=单点(SINGLE)，橙色=伪距差分(PSRDIFF/SPPDIFF)，紫色=PPP，灰色=无解(NONE)。图例中标注各类型数量及中文名。</p>
         
-        <h3>{_pos_no}.2 INS轨迹分析（ENU坐标）</h3>
+        <h3>{_pos_no}.4 INS轨迹分析（ENU坐标）</h3>
         <div class="chart">
             <img src="ins_enu_trajectory.png" alt="INS ENU轨迹"/>
         </div>
         <p>INS轨迹图使用ENU坐标系显示，组合惯导系统的定位轨迹。颜色对应：绿色(INS_RTKFIXED)、橙色(INS_RTKFLOAT)、蓝色(INS_PSRSP)、黄色(INS_PSRDIFF)、灰色(NONE)。</p>
         
-        <h3>{_pos_no}.3 GNSS与INS轨迹对比</h3>
+        <h3>{_pos_no}.5 GNSS与INS轨迹对比</h3>
         <div class="chart">
             <img src="gnss_ins_combined_trajectory.png" alt="GNSS与INS轨迹对比"/>
         </div>
         <p>该图展示了GNSS纯定位轨迹（蓝色）与INS组合导航轨迹（红色）的叠加对比，可以分析两者之间的一致性和差异。</p>
         
-        <h3>{_pos_no}.4 BESTGNSSPOSA解算状态时间序列</h3>
+        <h3>{_pos_no}.6 BESTGNSSPOSA解算状态时间序列</h3>
         <div class="chart">
             <img src="solution_status.png" alt="解算状态时间序列"/>
         </div>
@@ -2645,29 +2672,37 @@ class GPSKinematicAnalyzer:
             md_content += f"""
 ## {_pos_no}. 位置分析
 
-![位置时间序列](position_time_series_gnss.png)
+### {_pos_no}.1 GNSS位置时间序列
 
-位置时间序列显示了接收机在Kinematic环境下的位置变化。从图中可以观察到位置的连续性和稳定性。
+![GNSS位置时间序列](position_time_series_gnss.png)
 
-### {_pos_no}.1 GNSS轨迹分析（ENU坐标）
+GNSS位置时间序列(数据源 BESTGNSSPOSA)显示了接收机在Kinematic环境下的位置变化。横轴为真实 GPS 时间(相对首历元), 无解(NONE)段以空白缺口显示, 不压缩时间轴。
+
+### {_pos_no}.2 INS位置时间序列
+
+![INS位置时间序列](position_time_series_ins.png)
+
+INS位置时间序列(数据源 INSPVAXA)显示了组合惯导的位置变化。横轴为真实 GPS 时间; 设备上电后 INS 需一段对准/收敛时间(本段数据起始约440s)才有有效解, 该等待段及中途无解段以空白缺口显示, 不压缩时间轴。
+
+### {_pos_no}.3 GNSS轨迹分析（ENU坐标）
 
 ![GNSS ENU轨迹](gnss_enu_trajectory.png)
 
 GNSS轨迹图使用ENU（East-North-Up）坐标系显示，按数据实际出现的解类型动态着色（本设备GNSS解类型见上分布图；不同产品命名可能有差异，如伪距差分北云称PSRDIFF、华测称SPPDIFF，含义相同）：绿色=RTK固定解(NARROW_INT)，蓝色=浮点解(NARROW_FLOAT)，红色=单点(SINGLE)，橙色=伪距差分(PSRDIFF/SPPDIFF)，紫色=PPP，灰色=无解(NONE)。图例中标注各类型数量及中文名。
 
-### {_pos_no}.2 INS轨迹分析（ENU坐标）
+### {_pos_no}.4 INS轨迹分析（ENU坐标）
 
 ![INS ENU轨迹](ins_enu_trajectory.png)
 
 INS轨迹图使用ENU坐标系显示，组合惯导系统的定位轨迹。颜色对应：绿色(INS_RTKFIXED)、橙色(INS_RTKFLOAT)、蓝色(INS_PSRSP)、黄色(INS_PSRDIFF)、灰色(NONE)。
 
-### {_pos_no}.3 GNSS与INS轨迹对比
+### {_pos_no}.5 GNSS与INS轨迹对比
 
 ![GNSS与INS轨迹对比](gnss_ins_combined_trajectory.png)
 
 该图展示了GNSS纯定位轨迹（蓝色）与INS组合导航轨迹（红色）的叠加对比，可以分析两者之间的一致性和差异。
 
-### {_pos_no}.4 BESTGNSSPOSA解算状态时间序列
+### {_pos_no}.6 BESTGNSSPOSA解算状态时间序列
 
 ![解算状态时间序列](solution_status.png)
 
