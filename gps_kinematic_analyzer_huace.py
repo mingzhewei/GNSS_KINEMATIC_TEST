@@ -3520,7 +3520,19 @@ def run_with_gui():
                                         speed_threshold=speed_threshold)
             result = analyzer.run_analysis()
             if result:
-                messagebox.showinfo("成功", f"分析完成！结果保存在: {analyzer.output_dir}")
+                # 分析完成后自动打开HTML报告和结果目录(Windows)
+                report_html = os.path.join(analyzer.output_dir, 'report.html')
+                if os.path.isfile(report_html):
+                    os.startfile(report_html)  # Windows默认应用打开HTML(通常为浏览器)
+                else:
+                    messagebox.showwarning("提示", "HTML报告未找到，将打开结果目录")
+                if os.path.isdir(analyzer.output_dir):
+                    os.startfile(analyzer.output_dir)  # 打开结果目录
+                messagebox.showinfo(
+                    "分析完成",
+                    "结果目录已打开：\n" + analyzer.output_dir +
+                    "\n\nHTML报告：\n" + report_html
+                )
             else:
                 messagebox.showerror("错误", "分析过程出现错误")
         except Exception as e:
