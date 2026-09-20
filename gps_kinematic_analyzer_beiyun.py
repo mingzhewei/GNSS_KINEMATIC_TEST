@@ -44,13 +44,10 @@ from collections import Counter
 try:
     import numpy as np
     import matplotlib.pyplot as plt
-    import pandas as pd
-    from scipy import stats
-    import seaborn as sns
 except ImportError as e:
     print(f"缺少必要的依赖库: {e}")
     print("请运行以下命令安装依赖:")
-    print("  pip install numpy matplotlib pandas scipy seaborn")
+    print("  pip install numpy matplotlib")
     import sys
     sys.exit(1)
 

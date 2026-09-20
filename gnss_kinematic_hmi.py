@@ -68,9 +68,44 @@ class AnalysisTask:
         self.report_path = os.path.join(self.output_dir, self.product.report_name)
 
 
+def is_frozen() -> bool:
+    """是否运行在 PyInstaller 打包后的 EXE 中。"""
+    return getattr(sys, "frozen", False)
+
+
 def build_command(product: ProductConfig, input_file: str) -> list[str]:
+    """构造分析子进程命令。
+
+    开发模式：直接用 python 调用产品脚本。
+    EXE模式：用当前 EXE 自身以 --worker key 启动对应产品分析器，
+             避免依赖用户电脑上的 Python 环境。
+    """
+    if is_frozen():
+        return [sys.executable, "--worker", product.key, input_file, *product.extra_args]
     script_path = BASE_DIR / product.script
     return [sys.executable, "-X", "utf8", str(script_path), input_file, *product.extra_args]
+
+
+def run_worker(key: str, args: list[str]) -> int:
+    """EXE内部工作模式：按产品key调用对应分析器。"""
+    product = PRODUCTS.get(key)
+    if product is None:
+        print(f"未知产品key: {key}", file=sys.stderr)
+        return 2
+
+    if is_frozen():
+        script_path = Path(sys._MEIPASS) / product.script  # type: ignore[attr-defined]
+    else:
+        script_path = BASE_DIR / product.script
+    if not script_path.is_file():
+        print(f"分析脚本不存在: {script_path}", file=sys.stderr)
+        return 2
+
+    namespace = {"__file__": str(script_path), "__name__": "__main__"}
+    code = compile(script_path.read_text(encoding="utf-8"), str(script_path), "exec")
+    sys.argv = [str(script_path), *args]
+    exec(code, namespace, namespace)
+    return 0
 
 
 def open_path(path: str) -> None:
@@ -466,6 +501,8 @@ class GNSSKinematicHMI:
 
 
 def main() -> None:
+    if len(sys.argv) >= 3 and sys.argv[1] == "--worker":
+        raise SystemExit(run_worker(sys.argv[2], sys.argv[3:]))
     app = GNSSKinematicHMI()
     app.run()
 
