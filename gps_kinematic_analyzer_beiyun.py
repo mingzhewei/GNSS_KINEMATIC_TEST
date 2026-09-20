@@ -835,6 +835,126 @@ class GPSKinematicAnalyzer:
         self._cache_gpgga = data
         return data
 
+    def parse_gpgst(self):
+        """解析北云 $GPGST GPS伪距噪声统计报文 (UG016 4.1.7, NMEA GST)
+
+        字段(手册原表, 数据字段 $--GST 适用, talker 可变):
+        [0]数据ID [1]UTC时间 hhmmss.ss
+        [2]用于导航计算的伪距标准偏差的均方根值 (即伪距残差 RMS)
+        [3]椭球长半轴标准偏差(m) [4]椭球短半轴标准偏差(m) [5]椭球长半轴方位(度)
+        [6]标准纬度偏差(m) [7]标准经度偏差(m) [8]标准高度偏差(m)
+        [9]*hh 校验
+
+        说明: GST 无 GPS 周秒时间戳, 仅有 UTC 时刻; 与 BESTGNSSPOSA(GPS周秒)
+        时间轴不同源, 故残差图横轴用"相对首历元秒"(由记录顺序推出), 不做跨报文对齐。
+        """
+        if hasattr(self, '_cache_gpgst'):
+            return self._cache_gpgst
+        data = []
+        for ln in self.parsed_data.get('$GPGST', []):
+            ln = ln.strip()
+            if not ln.startswith('$GPGST'):
+                continue
+            body = ln.split('*')[0]
+            f = body.split(',')
+            if len(f) < 9:
+                continue
+            try:
+                utc = f[1].strip()
+                rms = float(f[2]) if f[2] else None
+                smjr = float(f[3]) if f[3] else None
+                smnr = float(f[4]) if f[4] else None
+                orient = float(f[5]) if f[5] else None
+                latstd = float(f[6]) if f[6] else None
+                lonstd = float(f[7]) if f[7] else None
+                altstd = float(f[8]) if f[8] else None
+            except (ValueError, IndexError):
+                continue
+            if rms is None:
+                continue
+            sec_of_day = None
+            if len(utc) >= 6:
+                try:
+                    sec_of_day = (int(utc[0:2]) * 3600 + int(utc[2:4]) * 60
+                                  + float(utc[4:]))
+                except ValueError:
+                    sec_of_day = None
+            data.append({
+                'utc': utc, 'sec_of_day': sec_of_day,
+                'rms': rms, 'smjr': smjr, 'smnr': smnr, 'orient': orient,
+                'lat_std': latstd, 'lon_std': lonstd, 'alt_std': altstd,
+            })
+        self._cache_gpgst = data
+        return data
+
+    def analyze_pos_quality(self):
+        """位置标准差sigma收敛 + 伪距残差RMS 分析 (北云)
+
+        位置sigma: BESTGNSSPOSA 字段9/10/11 = 纬度/经度/高度标准差, 单位 m (UG016 4.2.2)
+        伪距残差RMS: $GPGST 字段3 = 用于导航计算的伪距标准偏差的均方根值 (UG016 4.1.7)
+
+        两者均为接收机自估精度, 不是外业真值误差; 仅统计 SOL_COMPUTED 且坐标有效
+        的历元。与华测同口径(见 gps_kinematic_analyzer_huace.analyze_pos_quality),
+        单位统一为 m, 保证两模组可比。
+        """
+        print("分析位置sigma收敛与伪距残差RMS (BESTGNSSPOSA / GPGST)...")
+        pos = self.parse_bestgnss_posa()
+        gst = self.parse_gpgst()
+
+        pos_v = [d for d in pos
+                 if d.get('valid_coord') and d.get('sol_status') == 'SOL_COMPUTED']
+        res = {'pos_src': 'BESTGNSSPOSA', 'gst_src': '$GPGST',
+               'pos_epochs': len(pos_v), 'gst_epochs': len(gst)}
+
+        def _s(lst):
+            return (statistics.mean(lst), statistics.median(lst), min(lst), max(lst)) if lst else (None,) * 4
+        for key, name in (('lat_sigma', 'lat'), ('lon_sigma', 'lon'), ('hgt_sigma', 'hgt')):
+            vals = [d[key] for d in pos_v if d.get(key) and d[key] > 0]
+            a, med, mn, mx = _s(vals)
+            if a is not None:
+                res[name + '_mean'], res[name + '_med'] = a, med
+                res[name + '_min'], res[name + '_max'] = mn, mx
+        if pos_v:
+            t0 = pos_v[0]['timestamp']
+            res['pos_t'] = [d['timestamp'] - t0 for d in pos_v]
+            res['pos_lat'] = [d['lat_sigma'] for d in pos_v]
+            res['pos_lon'] = [d['lon_sigma'] for d in pos_v]
+            res['pos_hgt'] = [d['hgt_sigma'] for d in pos_v]
+
+        if gst:
+            secs = [g['sec_of_day'] for g in gst]
+            if all(v is not None for v in secs) and len(secs) >= 2:
+                t0 = secs[0]
+                rel = []
+                prev = None
+                wrap = 0.0
+                for v in secs:
+                    vv = v + wrap
+                    if prev is not None and vv < prev - 43200:
+                        wrap += 86400.0
+                        vv = v + wrap
+                    rel.append(vv - t0)
+                    prev = vv
+                res['gst_t'] = rel
+            else:
+                res['gst_t'] = [float(i) for i in range(len(gst))]
+            res['gst_rms'] = [g['rms'] for g in gst]
+            a, med, mn, mx = _s(res['gst_rms'])
+            res['rms_mean'], res['rms_med'], res['rms_min'], res['rms_max'] = a, med, mn, mx
+
+        self.analysis_results['pos_quality'] = res
+        if pos_v:
+            print("  位置sigma(BESTGNSSPOSA): %d历元, sigma_lat中位 %.4fm, sigma_lon中位 %.4fm, sigma_hgt中位 %.4fm" % (
+                len(pos_v), res.get('lat_med', float('nan')), res.get('lon_med', float('nan')), res.get('hgt_med', float('nan'))))
+        else:
+            print("  警告: 无有效 BESTGNSSPOSA 位置sigma历元")
+        if gst:
+            print("  伪距残差RMS(GPGST): %d历元, 中位 %.3fm, 最大 %.3fm" % (
+                len(gst), res.get('rms_med', float('nan')), res.get('rms_max', float('nan'))))
+        else:
+            print("  警告: 未找到 $GPGST 数据, 跳过伪距残差RMS")
+        return res
+
     def analyze_position_accuracy(self):
         """分析位置精度 - Kinematic数据无真值，不生成误导性指标
 
@@ -1269,6 +1389,10 @@ class GPSKinematicAnalyzer:
         # DOP时间序列
         if 'dop' in self.analysis_results:
             self._plot_dop_time_series()
+
+        # 位置sigma收敛+伪距残差RMS 四联图
+        if 'pos_quality' in self.analysis_results:
+            self._plot_pos_quality()
         
         # 速度时间序列
         if 'velocity' in self.analysis_results:
@@ -1774,6 +1898,63 @@ class GPSKinematicAnalyzer:
         plt.close()
         print(f"保存DOP时间序列图: {output_file}")
 
+    def _plot_pos_quality(self):
+        """位置sigma收敛 + 伪距残差RMS 四联图 (北云: BESTGNSSPOSA / GPGST)
+
+        子图(按用户要求, 与华测同版式, 单位统一 m):
+          1) 纬度标准差 lat sigma   2) 经度标准差 lon sigma
+          3) 高度标准差 hgt sigma   4) 伪距残差RMS (GPGST field3)
+        位置sigma横轴 = BESTGNSSPOSA GPS周秒相对时间; RMS横轴 = GPGST UTC相对时间,
+        两轴各自独立标注, 不做跨报文强制对齐。
+        """
+        res = self.analysis_results.get('pos_quality', {})
+        pos_t = res.get('pos_t'); gst_t = res.get('gst_t')
+        if not pos_t and not gst_t:
+            print("无位置质量数据, 跳过四联图")
+            return
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+        panels = [
+            (axes[0][0], pos_t, res.get('pos_lat'), 'Latitude sigma (m)', '#1f77b4'),
+            (axes[0][1], pos_t, res.get('pos_lon'), 'Longitude sigma (m)', '#2ca02c'),
+            (axes[1][0], pos_t, res.get('pos_hgt'), 'Height sigma (m)', '#d62728'),
+        ]
+        for ax, x, y, title, color in panels:
+            if x and y:
+                ax.plot(x, y, color=color, linewidth=0.8)
+                posvals = [v for v in y if v and v > 0]
+                if posvals:
+                    med = statistics.median(posvals)
+                    ax.axhline(med, color=color, linestyle='--', linewidth=0.8, alpha=0.6,
+                               label='median %.4f m' % med)
+                    ax.legend(fontsize=8, loc='upper right')
+                ax.set_xlabel('Time (s, rel. BESTGNSSPOSA epoch0)')
+            else:
+                ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(title, fontsize=11)
+            ax.set_ylabel('sigma (m)')
+            ax.grid(True, alpha=0.3)
+        ax = axes[1][1]
+        if gst_t and res.get('gst_rms'):
+            ax.plot(gst_t, res['gst_rms'], color='#9467bd', linewidth=0.8)
+            med = statistics.median(res['gst_rms'])
+            ax.axhline(med, color='#9467bd', linestyle='--', linewidth=0.8, alpha=0.6,
+                       label='median %.3f m' % med)
+            ax.legend(fontsize=8, loc='upper right')
+            ax.set_xlabel('Time (s, rel. GPGST epoch0)')
+        else:
+            ax.text(0.5, 0.5, 'No GPGST data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Pseudorange residual RMS (m, GPGST field3)', fontsize=11)
+        ax.set_ylabel('RMS (m)')
+        ax.grid(True, alpha=0.3)
+        fig.suptitle('Position Sigma Convergence & Pseudorange Residual RMS '
+                     '(BESTGNSSPOSA / GPGST, unit: m)', fontsize=13, fontweight='bold')
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        output_file = os.path.join(self.output_dir, 'pos_sigma_residual_rms.png')
+        fig.savefig(output_file, dpi=150)
+        plt.close(fig)
+        print("保存位置sigma/伪距残差RMS四联图: %s" % output_file)
+
     def _plot_solution_status(self, data):
         """绘制BESTGNSSPOSA解算状态时间序列图(用户准则: 不用BESTPOSA)
         
@@ -2239,8 +2420,40 @@ class GPSKinematicAnalyzer:
         # 速度分析
         if 'velocity' in self.analysis_results:
             vel = self.analysis_results['velocity']
+        # 位置sigma收敛与伪距残差RMS(BESTGNSSPOSA/GPGST)
+        pq = self.analysis_results.get('pos_quality', {})
+        if pq.get('pos_epochs') or pq.get('gst_epochs'):
+            def _row3(label, key):
+                a = pq.get(key + '_mean')
+                if a is None:
+                    return ''
+                return ('<tr><td>%s</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>m</td></tr>'
+                        % (label, a, pq.get(key + '_med'), pq.get(key + '_min'), pq.get(key + '_max')))
+            rms_row = ''
+            if pq.get('rms_mean') is not None:
+                rms_row = ('<tr><td>伪距残差RMS ($GPGST field3)</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>m</td></tr>'
+                           % (pq['rms_mean'], pq['rms_med'], pq['rms_min'], pq['rms_max']))
             html_content += f"""
-        <h2>7. 速度分析</h2>
+        <h2>7. 位置标准差σ收敛与伪距残差RMS</h2>
+        <p><strong>数据源:</strong> 位置σ = BESTGNSSPOSA 字段9/10/11 (纬度/经度/高度标准差, UG016 4.2.2);
+           伪距残差RMS = $GPGST 字段3 "用于导航计算的伪距标准偏差的均方根值" (UG016 4.1.7)。单位统一 m。</p>
+        <p style="color:#555;font-size:13px;">σ为接收机自估精度(协方差传播), 反映解算收敛质量而非外业真值误差;
+           仅统计 SOL_COMPUTED 且坐标有效历元({pq.get('pos_epochs', 0)}历元)。
+           伪距残差RMS越小越好, 其抬升通常指示遮挡/多径/电离层扰动。</p>
+        <div class="chart">
+            <img src="pos_sigma_residual_rms.png" alt="位置sigma收敛与伪距残差RMS"/>
+        </div>
+        <table>
+            <tr><th>指标</th><th>均值</th><th>中位数</th><th>最小</th><th>最大</th><th>单位</th></tr>
+            {_row3('纬度标准差 σ_lat', 'lat')}
+            {_row3('经度标准差 σ_lon', 'lon')}
+            {_row3('高度标准差 σ_hgt', 'hgt')}
+            {rms_row}
+        </table>
+            """
+
+            html_content += f"""
+        <h2>8. 速度分析</h2>
         <div class="chart">
             <img src="velocity_time_series.png" alt="速度时间序列"/>
         </div>
@@ -2267,7 +2480,7 @@ class GPSKinematicAnalyzer:
         cn0 = self.analysis_results.get('cn0', {})
         if cn0.get('available'):
             html_content += f"""
-        <h2>8. 载噪比 C/N0 分析<span class="badge-feature">特色(TRACKSTATA)</span></h2>
+        <h2>9. 载噪比 C/N0 分析<span class="badge-feature">特色(TRACKSTATA)</span></h2>
         <div class="chart">
             <img src="cn0_analysis.png" alt="C/N0载噪比分析"/>
         </div>
@@ -2293,7 +2506,7 @@ class GPSKinematicAnalyzer:
             """
 
         # 位置分析(编号自适应: 若无C/N0特色章则前移)
-        _pos_no = 9 if self.analysis_results.get('cn0', {}).get('available') else 8
+        _pos_no = 10 if self.analysis_results.get('cn0', {}).get('available') else 9
         _conc_no = _pos_no + 1
         bestgnss_data = self.parse_bestgnss_posa()
         if bestgnss_data:
@@ -2628,8 +2841,37 @@ class GPSKinematicAnalyzer:
         # 速度分析
         if 'velocity' in self.analysis_results:
             vel = self.analysis_results['velocity']
+        # 位置sigma收敛与伪距残差RMS(BESTGNSSPOSA/GPGST)
+        pq = self.analysis_results.get('pos_quality', {})
+        if pq.get('pos_epochs') or pq.get('gst_epochs'):
+            def _mrow(label, key):
+                a = pq.get(key + '_mean')
+                if a is None:
+                    return ''
+                return ('| %s | %.4f | %.4f | %.4f | %.4f | m |\n'
+                        % (label, a, pq.get(key + '_med'), pq.get(key + '_min'), pq.get(key + '_max')))
+            rms_line = ''
+            if pq.get('rms_mean') is not None:
+                rms_line = ('| 伪距残差RMS ($GPGST field3) | %.4f | %.4f | %.4f | %.4f | m |\n'
+                            % (pq['rms_mean'], pq['rms_med'], pq['rms_min'], pq['rms_max']))
             md_content += f"""
-## 7. 速度分析
+## 7. 位置标准差σ收敛与伪距残差RMS
+
+**数据源**: 位置σ = BESTGNSSPOSA 字段9/10/11 (纬度/经度/高度标准差, UG016 4.2.2);
+伪距残差RMS = $GPGST 字段3 "用于导航计算的伪距标准偏差的均方根值" (UG016 4.1.7)。单位统一 m。
+
+![位置sigma收敛与伪距残差RMS](pos_sigma_residual_rms.png)
+
+σ为接收机自估精度(协方差传播), 反映解算收敛质量而非外业真值误差; 仅统计 SOL_COMPUTED 且坐标有效历元({pq.get('pos_epochs', 0)}历元)。
+伪距残差RMS越小越好, 其抬升通常指示遮挡/多径/电离层扰动。
+
+| 指标 | 均值 | 中位数 | 最小 | 最大 | 单位 |
+|------|------|--------|------|------|------|
+{_mrow('纬度标准差 σ_lat', 'lat')}{_mrow('经度标准差 σ_lon', 'lon')}{_mrow('高度标准差 σ_hgt', 'hgt')}{rms_line}
+"""
+
+            md_content += f"""
+## 8. 速度分析
 
 ![速度时间序列](velocity_time_series.png)
 
@@ -2644,7 +2886,7 @@ class GPSKinematicAnalyzer:
         cn0 = self.analysis_results.get('cn0', {})
         if cn0.get('available'):
             md_content += f"""
-## 8. 载噪比 C/N0 分析（特色：TRACKSTATA）
+## 9. 载噪比 C/N0 分析（特色：TRACKSTATA）
 
 ![C/N0载噪比分析](cn0_analysis.png)
 
@@ -2665,7 +2907,7 @@ class GPSKinematicAnalyzer:
         """
 
         # 位置分析(编号自适应: 若无C/N0特色章则前移)
-        _pos_no = 9 if self.analysis_results.get('cn0', {}).get('available') else 8
+        _pos_no = 10 if self.analysis_results.get('cn0', {}).get('available') else 9
         _conc_no = _pos_no + 1
         bestgnss_data = self.parse_bestgnss_posa()
         if bestgnss_data:
@@ -2826,6 +3068,9 @@ INS轨迹图使用ENU坐标系显示，组合惯导系统的定位轨迹。颜�
         
         # 分析DOP
         self.analyze_dop()
+
+        # 位置sigma收敛与伪距残差RMS(BESTGNSSPOSA/GPGST)
+        self.analyze_pos_quality()
         
         # 分析速度
         self.analyze_velocity()

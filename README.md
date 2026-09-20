@@ -1,4 +1,4 @@
-﻿# GPS/RTK Kinematic 数据分析工具（北云 + 华测）
+# GPS/RTK Kinematic 数据分析工具（北云 + 华测）
 
 ## 项目简介
 
@@ -49,6 +49,7 @@ python gps_kinematic_analyzer_huace.py   <华测数据.log>
 - 采样率 / 丢帧统计
 - 解类型分布（GNSS 固定解率，北云额外含 INS 固定解率）
 - 卫星可见性、DOP 值
+- 位置标准差σ收敛与伪距残差RMS（北云: BESTGNSSPOSA σ + GPGST RMS；华测: BESTP/#BESTPA σ + GNGST RMS，单位统一 m）
 - 速度时间序列（北云: INSPVAXA 三分量；华测: BESTVA/RTKV 水平速度+航迹角分解）
 - RTK 链路核对（基站ID、差分龄期，均源自 GNSS 位置报文）
 - ENU 轨迹图、解算状态时间序列
