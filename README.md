@@ -12,6 +12,8 @@
 | `gps_kinematic_analyzer_beiyun.py` | 北云 M21（组合惯导） | `BESTGNSSPOSA`(GNSS) / `INSPVAXA`(惯导) | 含 GNSS+INS 联合分析、惯导轨迹 |
 | `gps_kinematic_analyzer_huace.py` | 华测 M720（纯GNSS） | `#BESTPA`(10Hz主源) / `#BESTVA`(速度) / `<RTKV`(旧格式) / `#BESTDOPSA` | 纯GNSS/RTK分析，无惯导 |
 
+| `gnss_kinematic_hmi.py` | 统一 HMI 调度入口（北云 + 华测） | 调用上述产品分析脚本 | 后台调用产品脚本、多任务队列、自动打开HTML报告 |
+
 > 华测 M720 惯导需外接 IMU 才启用，当前未外接，故华测版**已彻底移除全部惯导处理**。
 > 速度分析：新采集用 `#BESTVA`，旧采集回退 `<RTKV`（RTK速度报文）。
 
