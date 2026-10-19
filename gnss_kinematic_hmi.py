@@ -52,6 +52,13 @@ PRODUCTS: dict[str, ProductConfig] = {
         filetypes=(("华测 COM1 数据", "*.dat;*.log"), ("所有文件", "*.*")),
         color="#b03a2e",
     ),
+    "beidou": ProductConfig(
+        key="beidou",
+        display_name="北斗星通 UM980（和芯星通 N4）",
+        script="gps_kinematic_analyzer_beidou.py",
+        filetypes=(("北斗UM980数据", "*.log;*.dat"), ("所有文件", "*.*")),
+        color="#7d3c98",
+    ),
 }
 
 

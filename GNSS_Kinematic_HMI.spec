@@ -5,7 +5,7 @@ a = Analysis(
     ['gnss_kinematic_hmi.py'],
     pathex=[],
     binaries=[],
-    datas=[('gps_kinematic_analyzer_beiyun.py', '.'), ('gps_kinematic_analyzer_huace.py', '.'), ('kinematic_core', 'kinematic_core')],
+    datas=[('gps_kinematic_analyzer_beiyun.py', '.'), ('gps_kinematic_analyzer_huace.py', '.'), ('gps_kinematic_analyzer_beidou.py', '.'), ('kinematic_core', 'kinematic_core')],
     hiddenimports=['matplotlib'],
     hookspath=[],
     hooksconfig={},
