@@ -60,8 +60,8 @@ plt.rcParams['axes.unicode_minus'] = False
 # UM980数据分析器
 # ============================================================================
 class GPSKinematicAnalyzer:
-    # 依据 beidou_manual/UM980_北云指令对照表.md 的推荐配置。此表用于完整性核对；
-    # 若现场重新配置，应同步更新该配置基准。
+    # 依据 beidou_manual/UM980_北云指令对照表.md 的推荐配置。该周期仅作为参考基准，
+    # 不把“实测周期与参考周期不一致”直接判为错误：现场可能按试验目的特意重新设置。
     LOG_CONFIG = [
         ('BESTNAVA',  'BESTNAVA',  0.1, True),
         ('GGA',       'GGA',       0.1, True),
@@ -185,13 +185,15 @@ class GPSKinematicAnalyzer:
         anchors = []
         for head in [b'#BESTNAVA', b'#SATSINFOA', b'#BESTSATA', b'#RTKSTATUSA',
                      b'$GNGGA', b'$GPGGA', b'$GNGSA', b'$GPGSA', b'$GNGST',
-                     b'$GPGST', b'$GNGRS', b'$GPGRS']:
+                     b'$GPGST', b'$GNGRS', b'$GPGRS',
+                     b'$GPGSV', b'$GLGSV', b'$GBGSV', b'$GAGSV', b'$GQGSV']:
             pos = 0
             while True:
                 k = ascii_raw.find(head, pos)
                 if k < 0: break
                 anchors.append((k, head)); pos = k + 1
         anchors.sort()
+        ascii_anchor_candidates = len(anchors)
         for pos, head in anchors:
             star = ascii_raw.find(b'*', pos, pos + 15000)
             if star < 0: continue
@@ -231,6 +233,8 @@ class GPSKinematicAnalyzer:
             'garbage_lines': partial_lines,
             'ascii_lines': ascii_line_count,
             'embedded_rescued': embedded_rescued,
+            'ascii_anchor_candidates': ascii_anchor_candidates,
+            'ascii_invalid_candidates': max(0, ascii_anchor_candidates - embedded_rescued),
             'bad_obsvm_blocks': bad_obsvm,
         }
         return True
@@ -328,15 +332,16 @@ class GPSKinematicAnalyzer:
         return sorted(x for x in out if x is not None)
 
     def check_message_integrity(self):
-        print("完整性检查与报文周期核对(UM980推荐配置)...")
+        print("完整性检查与报文周期核对(推荐参考周期，不将差异直接判错)...")
         checks=[]
-        for display,key,configured,required in self.LOG_CONFIG:
+        for display,key,reference_period,required in self.LOG_CONFIG:
             headers,lines=self._collect_category_lines(key)
             if key=='OBSVMB': count=len(self.obsvm_records)
             else: count=len(lines)
-            e={'header':display,'matched':headers,'configured_period':configured,
+            e={'header':display,'matched':headers,'reference_period':reference_period,
                'count':count,'required':required,'status':'ok','note':'',
-               'actual_period':None,'actual_rate':None,'loss_rate':None,'time_span':None}
+               'actual_period':None,'actual_rate':None,'loss_rate':None,'time_span':None,
+               'gap_count':0,'max_gap':None,'estimated_missing_slots':0}
             if count==0:
                 e['status']='error' if required else 'info'
                 e['note']='报文缺失: 未在数据流中找到'
@@ -351,14 +356,31 @@ class GPSKinematicAnalyzer:
                     med=statistics.median(iv); span=ts[-1]-ts[0]
                     expected=span/med+1 if med>0 else 0
                     loss=max(0.0,(1-len(ts)/expected)*100) if expected>0 else 0
-                    e.update(actual_period=med,actual_rate=1/med,time_span=span,loss_rate=loss)
-                    if abs(med-configured)/configured>0.05:
-                        e['status']='warn'; e['note']=f"实际周期{med:.3f}s与设定{configured:.3f}s偏差超5%"
+                    gap_iv=[x for x in iv if x > med*1.5 + 1e-6]
+                    missing_slots=sum(max(0, int(round(x/med))-1) for x in iv)
+                    e.update(actual_period=med,actual_rate=1/med,time_span=span,
+                             loss_rate=loss,gap_count=len(gap_iv),
+                             max_gap=max(gap_iv) if gap_iv else None,
+                             estimated_missing_slots=missing_slots)
+                    if abs(med-reference_period)/reference_period>0.05:
+                        # 周期差异只提示核对现场配置，不判错；用户可能特意设置输出周期。
+                        e['note']=(e['note']+'; ' if e['note'] else '') + (
+                            f"实测周期{med:.3f}s与推荐参考{reference_period:.3f}s不一致，"
+                            "需结合现场配置确认")
+                    if gap_iv:
+                        gap_note=(f"按实测节律检测到{len(gap_iv)}个时间跳变/缺槽区间"
+                                  f"(最大{max(gap_iv):.3f}s，估算缺{missing_slots}个槽位)")
+                        e['note']=(e['note']+'; ' if e['note'] else '')+gap_note
+                        if loss>1.0:
+                            e['status']='warn'
+                        elif e['status']=='ok':
+                            e['status']='info'
                     if loss>1.0:
-                        e['status']='warn' if e['status']=='ok' else e['status']
-                        e['note']=(e['note']+'; ' if e['note'] else '')+f"估算丢帧率{loss:.1f}%"
+                        e['status']='warn' if e['status']!='error' else e['status']
+                        e['note']=(e['note']+'; ' if e['note'] else '')+f"按实测节律估算丢帧率{loss:.1f}%"
                 else: e['note']='时间戳间隔不足'
-            else: e['note']='无可用时间戳，未计算周期'
+            else:
+                e['note']='无可用时间戳，未计算周期；按实测条数呈现'
             checks.append(e)
             print(f"  {display}({','.join(headers) or 'binary'}): {count}条, "
                   + (f"实际{e['actual_period']:.3f}s/{e['actual_rate']:.2f}Hz, " if e['actual_period'] else '')
@@ -368,6 +390,8 @@ class GPSKinematicAnalyzer:
             'total_lines':self.header_info['total_lines'],
             'binary_blocks':self.header_info['binary_blocks'],
             'bad_obsvm_blocks':self.header_info['bad_obsvm_blocks'],
+            'ascii_anchor_candidates':self.header_info.get('ascii_anchor_candidates',0),
+            'ascii_invalid_candidates':self.header_info.get('ascii_invalid_candidates',0),
             'checks':checks,
         }
 
@@ -634,12 +658,12 @@ class GPSKinematicAnalyzer:
                 def u32(x): return int(x,16) if x else 0
                 status_map={0:'无差分源数据输入',1:'差分源可用观测值不足',2:'差分源延迟较大',
                             3:'电离层活跃',4:'ROVER端观测值不足',5:'满足RTK解算'}
-                calc=int(f[13]) if f[13] else 0
+                calc=int(f[12]) if f[12] else 0
                 data.append({'timestamp':int(hp[5])/1000.0,'gps_source':u32(f[0]),
                     'bds_source1':u32(f[2]),'bds_source2':u32(f[3]),'glo_source':u32(f[5]),
                     'gal_source1':u32(f[7]),'gal_source2':u32(f[8]),'qzss_source':u32(f[9]),
                     'pos_type':f[11],'calc_status':calc,'calc_status_text':status_map.get(calc,'未知'),
-                    'ion_detected':int(f[14]) if f[14] else 0,
+                    'ion_detected':int(f[13]) if f[13] else 0,
                     'adr_number':int(f[15]) if f[15] else 0})
             except (ValueError,IndexError): continue
         self._cache_rtkstatus=data; return data
@@ -910,8 +934,8 @@ class GPSKinematicAnalyzer:
         css='''body{font-family:Arial,"Microsoft YaHei",sans-serif;line-height:1.6;background:#f5f5f5;margin:0;padding:20px}.container{max-width:1250px;margin:auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 2px 10px #0002}h1,h2{color:#2c3e50;border-bottom:3px solid #2c3e50;padding-bottom:8px}h2{border-bottom:2px solid #3498db}table{width:100%;border-collapse:collapse;margin:15px 0}th{background:#3498db;color:#fff}th,td{padding:8px;border:1px solid #ddd;text-align:left;vertical-align:top}.pass{color:green;font-weight:bold}.warn{color:#e67e22;font-weight:bold}.fail{color:#c0392b;font-weight:bold}.chart{margin:15px 0}.chart img{width:100%;border:1px solid #ddd}.note{background:#eef6fb;border-left:4px solid #3498db;padding:10px;margin:10px 0}small{color:#666}'''
         rows=''
         for x in mi.get('checks',[]):
-            cls={'ok':'pass','info':'warn','warn':'warn','error':'fail'}.get(x['status'],'warn')
-            rows+=f'<tr><td>{x["header"]}</td><td>{",".join(x["matched"]) or "OBSVMB"}</td><td>{x["count"]}</td><td>{x["configured_period"]:.3f}</td><td>{self._safe(x["actual_period"])}</td><td>{self._safe(x["actual_rate"])}</td><td>{self._safe(x["loss_rate"])}</td><td class="{cls}">{x["status"]}</td><td><small>{x["note"] or "-"}</small></td></tr>'
+            cls={'ok':'pass','info':'info','warn':'warn','error':'fail'}.get(x['status'],'warn')
+            rows+=f'<tr><td>{x["header"]}</td><td>{",".join(x["matched"]) or "OBSVMB"}</td><td>{x["count"]}</td><td>{x["reference_period"]:.3f}</td><td>{self._safe(x["actual_period"])}</td><td>{self._safe(x["actual_rate"])}</td><td>{x["gap_count"]}</td><td>{self._safe(x["max_gap"])}</td><td>{x["estimated_missing_slots"]}</td><td class="{cls}">{x["status"]}</td><td><small>{x["note"] or "-"}</small></td></tr>'
         solrows=''.join(f'<tr><td>{k}</td><td>{v}</td><td>{v/st.get("total_epochs",1)*100:.1f}%</td></tr>' for k,v in sorted(st.get('type_count',{}).items(),key=lambda x:-x[1]))
         gsarows=''.join(f'<tr><td>{k}</td><td>{v}</td><td>{v/st.get("total_epochs",1)*100:.1f}%</td></tr>' for k,v in sorted(st.get('sol_status_count',{}).items(),key=lambda x:-x[1]))
         html=f'''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>UM980 GNSS Kinematic分析报告 - {self.filename}</title><style>{css}</style></head><body><div class="container">
@@ -922,9 +946,10 @@ class GPSKinematicAnalyzer:
 <tr><td>ASCII合法报文</td><td>{self.header_info.get('total_lines',0)}条</td></tr>
 <tr><td>原始行数</td><td>{self.header_info.get('raw_line_count',0)}行</td></tr>
 <tr><td>OBSVMB合法二进制历元</td><td>{self.header_info.get('binary_blocks',0)}个；CRC失败块{self.header_info.get('bad_obsvm_blocks',0)}个</td></tr>
+<tr><td>ASCII校验通过报文 / 锚点候选</td><td>{self.header_info.get('total_lines',0)}条 / {self.header_info.get('ascii_anchor_candidates',0)}个；校验失败锚点{self.header_info.get('ascii_invalid_candidates',0)}个</td></tr>
 <tr><td>ASCII残片/不可识别行</td><td>{self.header_info.get('garbage_lines',0)}行</td></tr>
 <tr><td>BESTNAVA时间跨度</td><td>{(max(d["timestamp"] for d in self.parse_bestnava())-min(d["timestamp"] for d in self.parse_bestnava())) if self.parse_bestnava() else 0}s</td></tr></table>
-<h2>2. 完整性与周期核对</h2><table><tr><th>报文</th><th>实测头</th><th>条数</th><th>设定周期s</th><th>实际周期s</th><th>实际Hz</th><th>丢帧率%</th><th>状态</th><th>备注</th></tr>{rows}</table>
+<h2>2. 完整性与周期核对</h2><div class="note">“参考周期”来自推荐配置，仅作对照。实测周期与参考周期不一致时不判为错误，需结合现场配置确认；完整性告警只基于实测时间戳节律的缺槽/跳变和校验结果。</div><table><tr><th>报文</th><th>实测头</th><th>条数</th><th>参考周期s</th><th>实际周期s</th><th>实际Hz</th><th>跳变数</th><th>最大跳变s</th><th>估算缺槽</th><th>状态</th><th>备注</th></tr>{rows}</table>
 <h2>3. 解类型</h2><div class="chart"><img src="gnss_solution_type_distribution.png"></div><p><strong>固定解率:</strong><span class="{'pass' if st.get('fixed_ratio',0)>95 else 'warn' if st.get('fixed_ratio',0)>80 else 'fail'}">{st.get('fixed_ratio',0):.1f}%</span></p><table><tr><th>Pos Type</th><th>数量</th><th>占比</th></tr>{solrows}</table><h3>Sol Status</h3><table><tr><th>Sol Status</th><th>数量</th><th>占比</th></tr>{gsarows}</table>
 <h2>4. 卫星与DOP</h2><div class="chart"><img src="satellite_time_series.png"></div><div class="chart"><img src="dop_time_series.png"></div><table><tr><th>指标</th><th>均值</th><th>最小</th><th>最大</th></tr>
 <tr><td>跟踪卫星 #SVs</td><td>{sv.get('average_tracked','-')}</td><td>{sv.get('min_tracked','-')}</td><td>{sv.get('max_tracked','-')}</td></tr>
@@ -949,8 +974,8 @@ class GPSKinematicAnalyzer:
         print("生成Markdown报告...")
         # Markdown内容与HTML同源要点，保持轻量。
         mi=self.analysis_results.get('message_integrity',{}); st=self.analysis_results.get('gnss_solution_type',{}); pq=self.analysis_results.get('pos_quality',{}); obs=self.analysis_results.get('obs',{})
-        lines=[f'# UM980 / 北斗星通 GNSS Kinematic分析报告','',f'- 输入：`{os.path.basename(self.input_file)}`',f'- 生成时间：{datetime.datetime.now():%Y-%m-%d %H:%M:%S}',f'- 协议依据：N4 Products Commands and Logs Reference Book R1.15','','## 完整性','| 报文 | 条数 | 设定周期s | 实际周期s | 实际Hz | 状态 |','|---|---:|---:|---:|---:|---|']
-        for x in mi.get('checks',[]): lines.append(f'| {x["header"]} | {x["count"]} | {x["configured_period"]:.3f} | {self._safe(x["actual_period"])} | {self._safe(x["actual_rate"])} | {x["status"]} |')
+        lines=[f'# UM980 / 北斗星通 GNSS Kinematic分析报告','',f'- 输入：`{os.path.basename(self.input_file)}`',f'- 生成时间：{datetime.datetime.now():%Y-%m-%d %H:%M:%S}',f'- 协议依据：N4 Products Commands and Logs Reference Book R1.15','','## 完整性与周期','说明：参考周期仅作对照，不将实测周期差异直接判错；告警基于校验和实测时间节律。','','| 报文 | 条数 | 参考周期s | 实际周期s | 实际Hz | 跳变数 | 估算缺槽 | 状态 | 备注 |','|---|---:|---:|---:|---:|---:|---:|---|---|']
+        for x in mi.get('checks',[]): lines.append(f'| {x["header"]} | {x["count"]} | {x["reference_period"]:.3f} | {self._safe(x["actual_period"])} | {self._safe(x["actual_rate"])} | {x["gap_count"]} | {x["estimated_missing_slots"]} | {x["status"]} | {x["note"]} |')
         lines += ['','## 解类型',f'- 总历元：{st.get("total_epochs",0)}',f'- 固定解率：{st.get("fixed_ratio",0):.1f}%']
         for k,v in sorted(st.get('type_count',{}).items(),key=lambda x:-x[1]): lines.append(f'- {k}: {v}')
         lines += ['','## 位置σ / 伪距残差',f'- 纬度σ中位：{self._safe(pq.get("lat_med"))} m',f'- 经度σ中位：{self._safe(pq.get("lon_med"))} m',f'- 高度σ中位：{self._safe(pq.get("hgt_med"))} m',f'- GST RMS中位：{self._safe(pq.get("rms_med"))} m',f'- GRS逐星残差中位：{self._safe(pq.get("grs_med"))} m','','## OBSVM',f'- 历元：{obs.get("epochs",0)}；频点观测：{obs.get("obs_total",0)}',f'- C/N0均值：{self._safe(obs.get("mean_cn0"))} dB-Hz；低C/N0占比：{obs.get("low_ratio",0):.1f}%',f'- 失锁/消失事件：{len(obs.get("loss_events",[]))}；重捕获事件：{len(obs.get("reacq_events",[]))}','','## 限制','Kinematic数据无外业真值，不能计算绝对定位误差；接收机σ/RMS为自估质量指标。']

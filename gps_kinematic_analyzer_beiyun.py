@@ -65,7 +65,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # ============================================================================
 class GPSKinematicAnalyzer:
     # ========================================================================
-    # ICOM3 口输出配置(设定周期), 来源: by_manual/icom3 setup.jpg 截屏
+    # ICOM3 口输出参考配置, 来源: by_manual/icom3 setup.jpg 截屏。周期仅作对照，不将差异直接判错。
     # 用户准则(2026-09-16):
     #   - 北云 GNSS 只用 BESTGNSSPOSA, 不用 BESTPOSA;
     #     惯导只用 INSPVAXA
@@ -76,7 +76,7 @@ class GPSKinematicAnalyzer:
     #     -> 不作为异常告警, 仅作信息提示(实际周期更密, 且不再使用)
     # ========================================================================
     ICOM3_CONFIG = [
-        # (规范报文头, 数据键名, 设定周期s, 是否必须出现)
+        # (规范报文头, 数据键名, 参考周期s, 是否必须出现)
         ('#BESTPOSA',      'BESTPOSA',      1.0,  True),
         ('#INSPVAXA',      'INSPVAXA',      0.1,  True),
         ('$GPGGA',         'GPGGA',         1.0,  True),
@@ -90,8 +90,8 @@ class GPSKinematicAnalyzer:
     ]
     # 实际周期更密但不算异常的豁免(报文头 -> 说明)
     RELAXED_PERIOD_NOTES = {
-        '#BESTPOSA': '设定1.0s, 实测通常0.2s(输出更密); 该报文已不再使用, 仅信息提示',
-        '$GPGGA': '设定1.0s, 实测通常0.2s(输出更密); 实际输出比设定更频繁, 不影响使用, 仅信息提示',
+        '#BESTPOSA': '参考1.0s, 实测通常0.2s(输出更密); 该报文已不再使用, 仅信息提示',
+        '$GPGGA': '参考1.0s, 实测通常0.2s(输出更密); 实际输出比参考更频繁, 不影响使用, 仅信息提示',
     }
     # ICOM4 关注项(setup图): RANGECMPB 二进制报文; 如需分析须另配二进制解码,
     # 当前按"静态相关内容关注项"记录, 不参与ASCII周期检查
@@ -320,11 +320,11 @@ class GPSKinematicAnalyzer:
             print(f"保存 {header} 到 {output_file}")
     
     # ========================================================================
-    # Kinematic 检测: 完整性检查 + 报文周期核对(用户准则 2026-09-16)
+    # Kinematic 检测: 完整性检查 + 报文周期核对
     #   1. 先对整个报文做完整性检查
-    #   2. 提取各报文实际周期, 与 ICOM3 设定周期核对
+    #   2. 提取各报文实际周期, 与 ICOM3 参考周期对照
     #   3. 实际周期在界面/报告中明确显示
-    #   4. 周期不符的报文标色告警(报告中标红/标黄)
+    #   4. 周期差异不直接判错；现场可能按试验目的特意重新配置。
     # ========================================================================
 
     def _extract_header_timestamp(self, header, lines):
@@ -367,8 +367,8 @@ class GPSKinematicAnalyzer:
           带时间戳报文以时间戳为最准
         判定规则:
         - 报文缺失 -> error(标红)
-        - 实测周期与设定偏差>5%(且不在豁免清单) -> warn(标黄)
-        - 估算丢帧率>1% -> warn(标黄)
+        - 实测周期与参考周期不一致 -> 仅提示核对现场配置
+        - 按实测节律检测到缺槽/丢帧或估算丢帧率>1% -> warn(标黄)
         - 其余 -> ok(绿色)
         """
         print("完整性检查与报文周期核对(ICOM3 配置)...")
@@ -381,7 +381,7 @@ class GPSKinematicAnalyzer:
                 dropped = self.header_info.get('gpimu_dropped', 0)
                 results.append({
                     'header': header, 'name': name,
-                    'configured_period': configured, 'count': dropped,
+                    'reference_period': configured, 'count': dropped,
                     'required': False, 'status': 'info',
                     'actual_period': None, 'actual_rate': None,
                     'loss_rate': None, 'time_span': None,
@@ -391,10 +391,12 @@ class GPSKinematicAnalyzer:
                 continue
             entry = {
                 'header': header, 'name': name,
-                'configured_period': configured, 'count': count,
+                'reference_period': configured, 'count': count,
                 'required': required, 'status': 'ok', 'note': '',
                 'actual_period': None, 'actual_rate': None,
                 'loss_rate': None, 'time_span': None,
+                'gap_count': 0, 'max_gap': None,
+                'estimated_missing_slots': 0,
             }
             if count == 0:
                 entry['status'] = 'error' if required else 'info'
@@ -418,6 +420,12 @@ class GPSKinematicAnalyzer:
                     entry['actual_rate'] = 1.0 / med if med > 0 else None
                     entry['time_span'] = span
                     entry['loss_rate'] = loss
+                    gap_intervals = [x for x in intervals if x > med * 1.5 + 1e-6]
+                    if gap_intervals:
+                        entry['gap_count'] = len(gap_intervals)
+                        entry['max_gap'] = max(gap_intervals)
+                        entry['estimated_missing_slots'] = sum(
+                            max(0, int(round(x / med)) - 1) for x in intervals)
             else:
                 # 无可用时间戳: 按报文插入规律推断(数据是事实, 以数据为准)
                 entry['note'] = '无可用时间戳, 按报文插入规律推断(以实测数据为准)'
@@ -430,10 +438,16 @@ class GPSKinematicAnalyzer:
             elif entry['actual_period'] is not None and configured > 0:
                 dev = abs(entry['actual_period'] - configured) / configured
                 if dev > 0.05:
-                    entry['status'] = 'warn'
+                    # 周期差异只提示配置核对，不判错；现场可能特意设置。
                     notes.append(
-                        f"实际周期{entry['actual_period']:.3f}s与设定{configured:.3f}s"
-                        f"偏差{dev*100:.1f}%, 请核对配置")
+                        f"实际周期{entry['actual_period']:.3f}s与参考周期{configured:.3f}s"
+                        f"不一致(差异{dev*100:.1f}%), 需结合现场配置确认")
+            if entry.get('gap_count', 0):
+                if entry['status'] == 'ok':
+                    entry['status'] = 'info'
+                notes.append(
+                    f"按实测节律检测到{entry['gap_count']}个时间跳变/缺槽区间"
+                    f"(最大{entry['max_gap']:.3f}s, 估算缺{entry['estimated_missing_slots']}个槽位)")
             if entry['loss_rate'] is not None and entry['loss_rate'] > 1.0:
                 if entry['status'] == 'ok':
                     entry['status'] = 'warn'
@@ -446,11 +460,11 @@ class GPSKinematicAnalyzer:
             # 控制台输出(实际周期明确显示)
             if entry['actual_period'] is not None:
                 print(f"  {header}: 实际周期 {entry['actual_period']:.3f}s "
-                      f"({entry['actual_rate']:.2f}Hz), 设定 {configured:.3f}s, "
+                      f"({entry['actual_rate']:.2f}Hz), 参考周期 {configured:.3f}s, "
                       f"{count}条, 状态 {entry['status']}"
                       + (f" - {entry['note']}" if entry['note'] else ''))
             else:
-                print(f"  {header}: {count}条, 设定 {configured:.3f}s, "
+                print(f"  {header}: {count}条, 参考周期 {configured:.3f}s, "
                       f"状态 {entry['status']}"
                       + (f" - {entry['note']}" if entry['note'] else ''))
 
@@ -2225,9 +2239,12 @@ class GPSKinematicAnalyzer:
             <tr>
                 <th>报文</th>
                 <th>条数</th>
-                <th>设定周期(s)</th>
+                <th>参考周期(s)</th>
                 <th>实际周期(s)</th>
                 <th>实际频率(Hz)</th>
+                <th>跳变数</th>
+                <th>最大跳变(s)</th>
+                <th>估算缺槽</th>
                 <th>估算丢帧率</th>
                 <th>状态</th>
                 <th>备注</th>
@@ -2236,7 +2253,7 @@ class GPSKinematicAnalyzer:
             status_style = {'ok': 'pass', 'info': 'metric-warning',
                             'warn': 'fail', 'error': 'fail'}
             status_text = {'ok': '正常', 'info': '提示',
-                           'warn': '周期不符', 'error': '缺失'}
+                           'warn': '完整性提示', 'error': '缺失'}
             for chk in mi['checks']:
                 cls = status_style.get(chk['status'], 'metric-warning')
                 actual_p = (f"{chk['actual_period']:.3f}"
@@ -2245,13 +2262,18 @@ class GPSKinematicAnalyzer:
                             if chk['actual_rate'] is not None else '-')
                 loss = (f"{chk['loss_rate']:.1f}%"
                         if chk['loss_rate'] is not None else '-')
+                max_gap = ('-' if chk.get('max_gap') is None
+                           else f"{chk['max_gap']:.3f}")
                 html_content += f"""
             <tr>
                 <td>{chk['header']}</td>
                 <td>{chk['count']}</td>
-                <td>{chk['configured_period']:.3f}</td>
+                <td>{chk['reference_period']:.3f}</td>
                 <td class="{cls}">{actual_p}</td>
                 <td class="{cls}">{actual_r}</td>
+                <td>{chk.get('gap_count', 0)}</td>
+                <td>{max_gap}</td>
+                <td>{chk.get('estimated_missing_slots', 0)}</td>
                 <td>{loss}</td>
                 <td class="{cls}">{status_text.get(chk['status'], chk['status'])}</td>
                 <td>{chk['note']}</td>
@@ -2259,7 +2281,7 @@ class GPSKinematicAnalyzer:
                 """
             html_content += """
         </table>
-        <p style="color:#c0392b;font-weight:bold;">注意: 标红/标黄项表示实际报文周期与设定周期可能不符或存在缺失, 请核对设备输出配置。</p>
+        <p><strong>说明:</strong> 参考周期仅来自配置截屏，不将实测周期差异直接判为错误；告警只基于实测时间节律的缺槽/跳变、丢帧或报文缺失。现场如特意调整周期，以实测周期为准。</p>
         """
             if mi.get('icom4_notes'):
                 html_content += """
@@ -2693,11 +2715,11 @@ class GPSKinematicAnalyzer:
             md_content += """
 ## 2. 完整性检查与报文周期核对(ICOM3配置)
 
-| 报文 | 条数 | 设定周期(s) | 实际周期(s) | 实际频率(Hz) | 丢帧率 | 状态 | 备注 |
+| 报文 | 条数 | 参考周期(s) | 实际周期(s) | 实际频率(Hz) | 跳变数 | 估算缺槽 | 状态 | 备注 |
 |------|------|------------|------------|-------------|--------|------|------|
 """
             status_icon = {'ok': '🟢正常', 'info': '🟡提示',
-                           'warn': '🟠**周期不符**', 'error': '🔴**缺失**'}
+                           'warn': '🟠**完整性提示**', 'error': '🔴**缺失**'}
             for chk in mi['checks']:
                 actual_p = (f"{chk['actual_period']:.3f}"
                             if chk['actual_period'] is not None else '-')
@@ -2707,12 +2729,13 @@ class GPSKinematicAnalyzer:
                         if chk['loss_rate'] is not None else '-')
                 note = chk['note'] or '-'
                 md_content += (f"| {chk['header']} | {chk['count']} | "
-                               f"{chk['configured_period']:.3f} | {actual_p} | "
-                               f"{actual_r} | {loss} | "
+                               f"{chk['reference_period']:.3f} | {actual_p} | "
+                               f"{actual_r} | {chk.get('gap_count', 0)} | "
+                               f"{chk.get('estimated_missing_slots', 0)} | "
                                f"{status_icon.get(chk['status'], chk['status'])} | "
                                f"{note} |\n")
             md_content += """
-> ⚠️ 加粗标色项表示实际报文周期与设定周期可能不符或报文缺失, 请核对设备输出配置。
+> 说明：参考周期仅作对照，不将实测周期差异直接判错；加粗项表示按实测节律存在缺槽/跳变或报文缺失。
 """
             if mi.get('icom4_notes'):
                 md_content += """

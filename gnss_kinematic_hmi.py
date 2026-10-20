@@ -18,8 +18,23 @@ BASE_DIR = Path(__file__).resolve().parent
 
 
 def default_output_dir(input_file: str) -> str:
-    """当前两个分析器的输出目录规则：输入文件名去掉第一个点后的部分。"""
-    return os.path.join(os.path.dirname(input_file), os.path.basename(input_file).split('.')[0])
+    """分析器通用输出目录规则。
+
+    - 取输入文件主名（按第一个点拆分）；
+    - Windows 保留设备名 COM1~COM9 / LPT1~LPT9 / CON / PRN / NUL
+      追加 `_data` 后缀，与分析器实际创建目录保持一致。
+    """
+    stem = os.path.basename(input_file).split('.')[0]
+    reserved = {
+        'com1', 'com2', 'com3', 'com4', 'com5',
+        'com6', 'com7', 'com8', 'com9',
+        'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5',
+        'lpt6', 'lpt7', 'lpt8', 'lpt9',
+        'con', 'prn', 'nul',
+    }
+    if stem.lower() in reserved:
+        stem += '_data'
+    return os.path.join(os.path.dirname(input_file), stem)
 
 
 @dataclass(frozen=True)
