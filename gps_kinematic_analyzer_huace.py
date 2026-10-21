@@ -1450,7 +1450,8 @@ class GPSKinematicAnalyzer:
         """
         if hasattr(self, '_cache_gngst'):
             return self._cache_gngst
-        data = []
+        from collections import Counter
+        raw = []
         lines = self.parsed_data.get('$GNGST', []) + self.parsed_data.get('$GPGST', [])
         for ln in lines:
             ln = ln.strip()
@@ -1480,13 +1481,33 @@ class GPSKinematicAnalyzer:
                                   + float(utc[4:]))
                 except ValueError:
                     sec_of_day = None
-            data.append({
-                'utc': utc, 'sec_of_day': sec_of_day,
+            if sec_of_day is None:
+                continue
+            raw.append({
+                'utc': utc, 'sec_of_day': sec_of_day, 'talker': f[0].strip(),
                 'rms': rms, 'smjr': smjr, 'smnr': smnr, 'orient': orient,
                 'lat_std': latstd, 'lon_std': lonstd, 'alt_std': altstd,
             })
-        self._cache_gngst = data
-        return data
+        # ? talker ??: ?? $GNGST/$GPGST ?????????????,
+        # ????? _gngst_dropped_info, ???????????????
+        self._gngst_dropped_info = None
+        counts = Counter(r['talker'] for r in raw)
+        if len(counts) > 1:
+            main_talker = counts.most_common(1)[0][0]
+            dropped = [r for r in raw if r['talker'] != main_talker]
+            raw = [r for r in raw if r['talker'] == main_talker]
+            self._gngst_dropped_info = {
+                'main': main_talker,
+                'dropped': [(r['talker'], r['utc'], r['rms']) for r in dropped]}
+        # UTC ?????(?????????): ?????????12h?????
+        prev = None; wrap = 0.0
+        for r in raw:
+            v = r['sec_of_day'] + wrap
+            if prev is not None and v < prev - 43200:
+                wrap += 86400.0; v = r['sec_of_day'] + wrap
+            r['sec_of_day'] = v; prev = v
+        self._cache_gngst = raw
+        return raw
 
     def analyze_pos_quality(self):
         """位置标准差sigma收敛 + 伪距残差RMS 分析 (华测)
@@ -1543,6 +1564,8 @@ class GPSKinematicAnalyzer:
             res['gst_rms'] = [g['rms'] for g in gst]
             a, med, mn, mx = _s(res['gst_rms'])
             res['rms_mean'], res['rms_med'], res['rms_min'], res['rms_max'] = a, med, mn, mx
+            info = getattr(self, '_gngst_dropped_info', None)
+            if info: res['gst_dropped'] = info
 
         self.analysis_results['pos_quality'] = res
         if pos_v:
@@ -2885,6 +2908,11 @@ class GPSKinematicAnalyzer:
             if pq.get('rms_mean') is not None:
                 rms_row = ('<tr><td>伪距残差RMS ($GNGST field3)</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>m</td></tr>'
                            % (pq['rms_mean'], pq['rms_med'], pq['rms_min'], pq['rms_max']))
+                if pq.get('gst_dropped'):
+                    info = pq['gst_dropped']
+                    rms_row += ('<tr><td>GST???</td><td colspan="5">UTC??????; ?talker??: ????%s, ??%d????(%s)</td></tr>'
+                                % (info['main'], len(info['dropped']),
+                                   ', '.join('%s@%s' % (t, u) for t, u, _r in info['dropped'])))
             html_content += f"""
         <h2>6. 位置标准差σ收敛与伪距残差RMS</h2>
         <p><strong>数据源:</strong> 位置σ = &lt;BESTP/#BESTPA 数据字段[8]/[9]/[10] (纬度/经度/高度标准差, M7手册 表3-38 字段10/11/12);
@@ -3261,6 +3289,11 @@ class GPSKinematicAnalyzer:
             if pq.get('rms_mean') is not None:
                 rms_line = ('| 伪距残差RMS ($GNGST field3) | %.4f | %.4f | %.4f | %.4f | m |\n'
                             % (pq['rms_mean'], pq['rms_med'], pq['rms_min'], pq['rms_max']))
+                if pq.get('gst_dropped'):
+                    info = pq['gst_dropped']
+                    rms_line += ('| GST??? | UTC??????; ?talker??: ????%s, ??%d????(%s) | | | |\n'
+                                 % (info['main'], len(info['dropped']),
+                                    ', '.join('%s@%s' % (t, u) for t, u, _r in info['dropped'])))
             md_content += f"""
 ## 6. 位置标准差σ收敛与伪距残差RMS
 

@@ -562,20 +562,50 @@ class GPSKinematicAnalyzer:
         return self._cache_gsa
 
     def parse_gst(self):
+        """?? $GNGST/$GPGST ???? RMS (?? 7.1.1.8, ??3)?
+
+        ??????:
+        1) GST ?? UTC ???????????? UTC ?????
+           (???????????? 12h ?????, +86400s)?
+        2) ?? talker ??: ???????? $GNGST ? $GPGST,
+           ????????? talker ??????; ??????
+           ?? dropped_talker_info, ?????/??, ???????
+           ??????????????
+        """
         if hasattr(self,'_cache_gst'): return self._cache_gst
-        data=[]
+        from collections import Counter
+        raw=[]
         for line in self._nmea_group('$GNGST','$GPGST'):
             try:
                 f=line.split('*')[0].split(',')
                 if len(f)<9: continue
                 ts=self._nmea_seconds(f[1])
-                data.append({'timestamp':ts,'utc':f[1],
+                if ts is None: continue
+                raw.append({'timestamp':ts,'utc':f[1],'talker':f[0],
                     'rms':float(f[2] or 'nan'),'smjr':float(f[3] or 'nan'),
                     'smnr':float(f[4] or 'nan'),'orient':float(f[5] or 'nan'),
                     'lat_std':float(f[6] or 'nan'),'lon_std':float(f[7] or 'nan'),
                     'alt_std':float(f[8] or 'nan')})
             except (ValueError,IndexError): continue
-        self._cache_gst=data; return data
+        # ? talker ??
+        self._gst_dropped_info=None
+        counts=Counter(r['talker'] for r in raw)
+        if len(counts)>1:
+            main_talker=counts.most_common(1)[0][0]
+            dropped=[r for r in raw if r['talker']!=main_talker]
+            kept=[r for r in raw if r['talker']==main_talker]
+            self._gst_dropped_info={
+                'main':main_talker,
+                'dropped':[(r['talker'],r['utc'],r['rms']) for r in dropped]}
+            raw=kept
+        # UTC ?????(?????????)
+        prev=None; wrap=0.0
+        for r in raw:
+            v=r['timestamp']+wrap
+            if prev is not None and v < prev - 43200:
+                wrap += 86400.0; v = r['timestamp'] + wrap
+            r['timestamp']=v; prev=v
+        self._cache_gst=raw; return raw
 
     def parse_grs(self):
         """解析GNGRS逐星残差。同UTC多条对应不同星座/信号，不能合并成一条。"""
@@ -630,6 +660,8 @@ class GPSKinematicAnalyzer:
         if gst:
             t0=gst[0]['timestamp']; res['gst_t']=[d['timestamp']-t0 for d in gst]; res['gst_rms']=[d['rms'] for d in gst]
             a,med,mn,mx=st(res['gst_rms']); res.update(rms_mean=a,rms_med=med,rms_min=mn,rms_max=mx)
+            info=getattr(self,'_gst_dropped_info',None)
+            if info: res['gst_dropped']=info
         if grs:
             all_res=[x for d in grs for x in d['residuals'] if x is not None]
             a,med,mn,mx=st(all_res); res.update(grs_mean=a,grs_med=med,grs_min=mn,grs_max=mx,grs_values=all_res)
@@ -962,6 +994,7 @@ class GPSKinematicAnalyzer:
 <tr><td>经度σ m</td><td>{self._safe(pq.get('lon_mean'))}</td><td>{self._safe(pq.get('lon_med'))}</td><td>{self._safe(pq.get('lon_min'))}</td><td>{self._safe(pq.get('lon_max'))}</td></tr>
 <tr><td>高度σ m</td><td>{self._safe(pq.get('hgt_mean'))}</td><td>{self._safe(pq.get('hgt_med'))}</td><td>{self._safe(pq.get('hgt_min'))}</td><td>{self._safe(pq.get('hgt_max'))}</td></tr>
 <tr><td>GST伪距残差RMS m</td><td>{self._safe(pq.get('rms_mean'))}</td><td>{self._safe(pq.get('rms_med'))}</td><td>{self._safe(pq.get('rms_min'))}</td><td>{self._safe(pq.get('rms_max'))}</td></tr>
+<tr><td>GST???</td><td colspan="4">{('UTC??????; ?talker??: ????%s, ??%d????(%s)' % (pq['gst_dropped']['main'], len(pq['gst_dropped']['dropped']), ', '.join('%s@%s' % (t,u) for t,u,_r in pq['gst_dropped']['dropped']))) if pq.get('gst_dropped') else '?talker, ????'}</td></tr>
 <tr><td>GRS逐星残差 m</td><td>{self._safe(pq.get('grs_mean'))}</td><td>{self._safe(pq.get('grs_med'))}</td><td>{self._safe(pq.get('grs_min'))}</td><td>{self._safe(pq.get('grs_max'))}</td></tr></table>
 <h2>6. 速度与轨迹</h2><div class="chart"><img src="velocity_time_series.png"></div><div class="chart"><img src="gnss_enu_trajectory.png"></div><p>平均速度 {self._safe(vel.get('average_speed'))} m/s；最大速度 {self._safe(vel.get('max_speed'))} m/s。ENU以首个有效BESTNAV点为参考点，仅用于轨迹形状，不是精度误差。</p>
 <h2>7. RTK链路与状态</h2><p>基站ID {rtk['primary_station'] if rtk else 'N/A'}；差分龄期平均{self._safe(rtk.get('avg_diff_age') if rtk else None)}s，最大{self._safe(rtk.get('max_diff_age') if rtk else None)}s。</p><div class="chart"><img src="rtk_status_timeline.png"></div><table><tr><th>RTK计算状态</th><th>数量</th></tr>{''.join(f'<tr><td>{k}</td><td>{v}</td></tr>' for k,v in rts.get('calc_status_count',{}).items())}</table>
