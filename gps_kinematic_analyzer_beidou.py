@@ -562,15 +562,15 @@ class GPSKinematicAnalyzer:
         return self._cache_gsa
 
     def parse_gst(self):
-        """?? $GNGST/$GPGST ???? RMS (?? 7.1.1.8, ??3)?
+        """解析 $GNGST/$GPGST 伪距残差 RMS (手册 7.1.1.8, 字段3)。
 
-        ??????:
-        1) GST ?? UTC ???????????? UTC ?????
-           (???????????? 12h ?????, +86400s)?
-        2) ?? talker ??: ???????? $GNGST ? $GPGST,
-           ????????? talker ??????; ??????
-           ?? dropped_talker_info, ?????/??, ???????
-           ??????????????
+        处理要点:
+        1) GST 时间轴内 UTC 字段存在跨日回绕时按 UTC 递增修正
+           (当记录较前一条早超过 12h 则 +86400s)。
+        2) 丢弃 talker 记录: 当主流中同时出现 $GNGST 与 $GPGST,
+           保留多数派 talker 作为主时间轴; 少数派记入
+           dropped_talker_info, 披露主/从、条数与时刻,
+           不合并进统计与绘图。
         """
         if hasattr(self,'_cache_gst'): return self._cache_gst
         from collections import Counter
@@ -587,7 +587,7 @@ class GPSKinematicAnalyzer:
                     'lat_std':float(f[6] or 'nan'),'lon_std':float(f[7] or 'nan'),
                     'alt_std':float(f[8] or 'nan')})
             except (ValueError,IndexError): continue
-        # ? talker ??
+        # 按 talker 隔离
         self._gst_dropped_info=None
         counts=Counter(r['talker'] for r in raw)
         if len(counts)>1:
@@ -598,7 +598,7 @@ class GPSKinematicAnalyzer:
                 'main':main_talker,
                 'dropped':[(r['talker'],r['utc'],r['rms']) for r in dropped]}
             raw=kept
-        # UTC ?????(?????????)
+        # UTC 跨日回绕修正(按记录顺序)
         prev=None; wrap=0.0
         for r in raw:
             v=r['timestamp']+wrap
@@ -994,7 +994,7 @@ class GPSKinematicAnalyzer:
 <tr><td>经度σ m</td><td>{self._safe(pq.get('lon_mean'))}</td><td>{self._safe(pq.get('lon_med'))}</td><td>{self._safe(pq.get('lon_min'))}</td><td>{self._safe(pq.get('lon_max'))}</td></tr>
 <tr><td>高度σ m</td><td>{self._safe(pq.get('hgt_mean'))}</td><td>{self._safe(pq.get('hgt_med'))}</td><td>{self._safe(pq.get('hgt_min'))}</td><td>{self._safe(pq.get('hgt_max'))}</td></tr>
 <tr><td>GST伪距残差RMS m</td><td>{self._safe(pq.get('rms_mean'))}</td><td>{self._safe(pq.get('rms_med'))}</td><td>{self._safe(pq.get('rms_min'))}</td><td>{self._safe(pq.get('rms_max'))}</td></tr>
-<tr><td>GST???</td><td colspan="4">{('UTC??????; ?talker??: ????%s, ??%d????(%s)' % (pq['gst_dropped']['main'], len(pq['gst_dropped']['dropped']), ', '.join('%s@%s' % (t,u) for t,u,_r in pq['gst_dropped']['dropped']))) if pq.get('gst_dropped') else '?talker, ????'}</td></tr>
+<tr><td>GST丢弃说明</td><td colspan="4">{('UTC跨日回绕已修正; 丢弃talker记录: 主时间轴%s, 丢弃%d条少数派(%s)' % (pq['gst_dropped']['main'], len(pq['gst_dropped']['dropped']), ', '.join('%s@%s' % (t,u) for t,u,_r in pq['gst_dropped']['dropped']))) if pq.get('gst_dropped') else '单talker, 无丢弃'}</td></tr>
 <tr><td>GRS逐星残差 m</td><td>{self._safe(pq.get('grs_mean'))}</td><td>{self._safe(pq.get('grs_med'))}</td><td>{self._safe(pq.get('grs_min'))}</td><td>{self._safe(pq.get('grs_max'))}</td></tr></table>
 <h2>6. 速度与轨迹</h2><div class="chart"><img src="velocity_time_series.png"></div><div class="chart"><img src="gnss_enu_trajectory.png"></div><p>平均速度 {self._safe(vel.get('average_speed'))} m/s；最大速度 {self._safe(vel.get('max_speed'))} m/s。ENU以首个有效BESTNAV点为参考点，仅用于轨迹形状，不是精度误差。</p>
 <h2>7. RTK链路与状态</h2><p>基站ID {rtk['primary_station'] if rtk else 'N/A'}；差分龄期平均{self._safe(rtk.get('avg_diff_age') if rtk else None)}s，最大{self._safe(rtk.get('max_diff_age') if rtk else None)}s。</p><div class="chart"><img src="rtk_status_timeline.png"></div><table><tr><th>RTK计算状态</th><th>数量</th></tr>{''.join(f'<tr><td>{k}</td><td>{v}</td></tr>' for k,v in rts.get('calc_status_count',{}).items())}</table>
@@ -1027,18 +1027,180 @@ class GPSKinematicAnalyzer:
         return True
 
 def run_with_gui():
+    """带GUI界面的主函数"""
     import tkinter as tk
-    from tkinter import filedialog,messagebox
+    from tkinter import filedialog, messagebox
+
     def select_file():
-        return filedialog.askopenfilename(title='选择UM980数据文件',filetypes=[('UM980数据','*.log;*.dat'),('所有文件','*.*')])
+        file_path = filedialog.askopenfilename(
+            title="选择UM980数据文件(ASCII文本+OBSVMB二进制)",
+            filetypes=[("UM980数据", "*.dat;*.log"), ("所有文件", "*")]
+        )
+        if file_path:
+            entry.delete(0, tk.END)
+            entry.insert(0, file_path)
+
     def start_analysis():
-        path=select_file()
-        if not path: return
-        GPSKinematicAnalyzer(path).run_analysis()
-    root=tk.Tk(); root.title('UM980 GNSS Kinematic Analyzer'); root.geometry('420x180')
-    tk.Label(root,text='UM980 / 北斗星通 GNSS Kinematic Analyzer',font=('Microsoft YaHei',12,'bold')).pack(pady=20)
-    tk.Button(root,text='选择数据并分析',command=start_analysis,width=24).pack(pady=10)
-    tk.Label(root,text='结果保存于输入文件同名目录',foreground='#666').pack()
+        file_path = entry.get().strip()
+        if not file_path:
+            messagebox.showerror("错误", "请选择输入文件")
+            return
+
+        if not os.path.exists(file_path):
+            messagebox.showerror("错误", f"文件不存在: {file_path}")
+            return
+
+        mark_anomalies = mark_anomalies_var.get()
+        speed_threshold_str = speed_threshold_entry.get().strip()
+
+        try:
+            speed_threshold = float(speed_threshold_str) if speed_threshold_str else 2.0
+            if speed_threshold <= 0:
+                messagebox.showerror("错误", "速度阈值必须大于0")
+                return
+        except ValueError:
+            messagebox.showerror("错误", "速度阈值必须是有效的数字")
+            return
+
+        try:
+            analyzer = GPSKinematicAnalyzer(file_path,
+                                        mark_anomalies=mark_anomalies,
+                                        speed_threshold=speed_threshold)
+            result = analyzer.run_analysis()
+            if result:
+                # 分析完成后自动打开HTML报告和结果目录(Windows)
+                report_html = os.path.join(analyzer.output_dir, 'report.html')
+                if os.path.isfile(report_html):
+                    os.startfile(report_html)  # Windows默认应用打开HTML(通常为浏览器)
+                else:
+                    messagebox.showwarning("提示", "HTML报告未找到，将打开结果目录")
+                if os.path.isdir(analyzer.output_dir):
+                    os.startfile(analyzer.output_dir)  # 打开结果目录
+                messagebox.showinfo(
+                    "分析完成",
+                    "结果目录已打开：\n" + analyzer.output_dir +
+                    "\n\nHTML报告：\n" + report_html
+                )
+            else:
+                messagebox.showerror("错误", "分析过程出现错误")
+        except Exception as e:
+            messagebox.showerror("错误", f"分析失败: {str(e)}")
+
+    # 创建主窗口
+    root = tk.Tk()
+    root.title("和芯星通 UM980 纯GNSS Kinematic分析工具")
+    root.geometry("620x600")
+    root.resizable(True, True)
+
+    # 设置背景色
+    root.configure(bg="#f0f0f0")
+
+    # 创建标题
+    title_label = tk.Label(root, text="和芯星通 UM980 纯GNSS Kinematic分析工具",
+                          font=("微软雅黑", 15, "bold"), bg="#f0f0f0", fg="#1e8449")
+    title_label.pack(pady=(18, 4))
+
+    # 醒目设备横幅: 明确本程序适用的设备, 避免与北云/华测程序混淆
+    device_banner = tk.Label(root,
+                             text="【适用设备：和芯星通/北斗星通 UM980 · 纯GNSS 移动站(无惯导)】",
+                             font=("微软雅黑", 11, "bold"),
+                             bg="#1e8449", fg="white", padx=10, pady=6)
+    device_banner.pack(pady=(0, 12), fill=tk.X, padx=20)
+
+    # 创建文件选择区域
+    frame = tk.Frame(root, bg="#f0f0f0")
+    frame.pack(pady=10, padx=20, fill=tk.X)
+
+    label = tk.Label(frame, text="输入文件 (ASCII文本+OBSVMB二进制, 必选; 支持.dat/.log):",
+                     font=("微软雅黑", 10, "bold"), bg="#f0f0f0", fg="#1e8449")
+    label.pack(anchor=tk.W, pady=(0, 5))
+
+    entry_frame = tk.Frame(frame, bg="#f0f0f0")
+    entry_frame.pack(fill=tk.X)
+
+    entry = tk.Entry(entry_frame, width=50, font=("微软雅黑", 10))
+    entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+    browse_button = tk.Button(entry_frame, text="浏览", command=select_file,
+                             font=("微软雅黑", 10), bg="#4CAF50", fg="white",
+                             padx=10, pady=5)
+    browse_button.pack(side=tk.RIGHT)
+
+    # 创建异常点标记选项区域
+    anomaly_frame = tk.Frame(root, bg="#f0f0f0")
+    anomaly_frame.pack(pady=10, padx=20, fill=tk.X)
+
+    # 勾选框
+    mark_anomalies_var = tk.BooleanVar(value=False)
+    mark_anomalies_check = tk.Checkbutton(anomaly_frame,
+                                         text="在轨迹图中标记异常跳跃点",
+                                         variable=mark_anomalies_var,
+                                         font=("微软雅黑", 10),
+                                         bg="#f0f0f0",
+                                         command=lambda: speed_threshold_entry.configure(state='normal' if mark_anomalies_var.get() else 'disabled'))
+    mark_anomalies_check.pack(anchor=tk.W, pady=(0, 5))
+
+    # 速度阈值输入
+    threshold_frame = tk.Frame(anomaly_frame, bg="#f0f0f0")
+    threshold_frame.pack(anchor=tk.W, fill=tk.X)
+
+    threshold_label = tk.Label(threshold_frame, text="速度阈值 (m/s):",
+                             font=("微软雅黑", 10), bg="#f0f0f0")
+    threshold_label.pack(side=tk.LEFT, padx=(20, 10))
+
+    speed_threshold_entry = tk.Entry(threshold_frame, width=10,
+                                    font=("微软雅黑", 10), state='disabled')
+    speed_threshold_entry.pack(side=tk.LEFT)
+    speed_threshold_entry.insert(0, "2.0")
+
+    threshold_hint = tk.Label(threshold_frame, text="(超过此速度阈值的点将被标记为异常)",
+                             font=("微软雅黑", 8), bg="#f0f0f0", fg="gray")
+    threshold_hint.pack(side=tk.LEFT, padx=(10, 0))
+
+    # 创建分析按钮
+    analyze_button = tk.Button(root, text="开始分析", command=start_analysis,
+                              font=("微软雅黑", 12, "bold"), bg="#2196F3", fg="white",
+                              padx=20, pady=10)
+    analyze_button.pack(pady=20)
+
+    # 创建状态显示区域
+    status_frame = tk.Frame(root, bg="#f0f0f0")
+    status_frame.pack(pady=10, padx=20, fill=tk.X)
+
+    status_label = tk.Label(status_frame, text="就绪", font=("微软雅黑", 10),
+                           bg="#f0f0f0", fg="#4CAF50")
+    status_label.pack(anchor=tk.W)
+
+    # 创建说明文本
+    info_text = """
+【适用设备】和芯星通/北斗星通 UM980 · 纯GNSS 移动站(无IMU, 单天线)
+
+输入文件说明（只需一个文件）：
+- 日志文件(必选): ASCII文本(.dat/.log), 同一日志流中混入OBSVMB二进制块
+  包含 #BESTNAVA(定位/速度) #SATSINFOA #BESTSATA #RTKSTATUSA
+  及 $GNGGA/$GNGSA/$GNGST/$GNGRS/$xxGSV 等NMEA报文
+  本程序的解析、评估、绘图、报告全部基于该日志文件
+  OBSVMB(二进制, Message ID=12)按同步头+CRC-32恢复, 用于C/N0与locktime分析
+
+操作步骤：
+1. 浏览选择数据文件
+2. 可勾选"标记异常跳跃点"并设置速度阈值
+3. 点击"开始分析"，结果保存在与输入文件同名的目录中
+
+用户准则：UM980为无IMU、单天线纯GNSS模组，不做INS分析；
+主定位/速度以 #BESTNAVA 为准；带时间戳的以时间戳为准。
+
+异常点说明：
+- 相邻两点速度超过阈值时标记为异常，轨迹图用红色X显示
+    """
+
+    info_frame = tk.Frame(root, bg="#f0f0f0")
+    info_frame.pack(pady=10, padx=20, fill=tk.BOTH, expand=True)
+
+    info_label = tk.Label(info_frame, text=info_text, font=("微软雅黑", 9),
+                         bg="#f0f0f0", justify=tk.LEFT)
+    info_label.pack(fill=tk.BOTH, expand=True)
+
     root.mainloop()
 
 def main():

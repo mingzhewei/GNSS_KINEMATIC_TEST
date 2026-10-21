@@ -1488,8 +1488,8 @@ class GPSKinematicAnalyzer:
                 'rms': rms, 'smjr': smjr, 'smnr': smnr, 'orient': orient,
                 'lat_std': latstd, 'lon_std': lonstd, 'alt_std': altstd,
             })
-        # ? talker ??: ?? $GNGST/$GPGST ?????????????,
-        # ????? _gngst_dropped_info, ???????????????
+        # 按 talker 隔离: 当 $GNGST/$GPGST 同时出现保留多数派,
+        # 少数派记入 _gngst_dropped_info, 不合并进统计与绘图
         self._gngst_dropped_info = None
         counts = Counter(r['talker'] for r in raw)
         if len(counts) > 1:
@@ -1499,7 +1499,7 @@ class GPSKinematicAnalyzer:
             self._gngst_dropped_info = {
                 'main': main_talker,
                 'dropped': [(r['talker'], r['utc'], r['rms']) for r in dropped]}
-        # UTC ?????(?????????): ?????????12h?????
+        # UTC 跨日回绕修正(按记录顺序): 较前一条早超12h则+86400s
         prev = None; wrap = 0.0
         for r in raw:
             v = r['sec_of_day'] + wrap
@@ -2910,7 +2910,7 @@ class GPSKinematicAnalyzer:
                            % (pq['rms_mean'], pq['rms_med'], pq['rms_min'], pq['rms_max']))
                 if pq.get('gst_dropped'):
                     info = pq['gst_dropped']
-                    rms_row += ('<tr><td>GST???</td><td colspan="5">UTC??????; ?talker??: ????%s, ??%d????(%s)</td></tr>'
+                    rms_row += ('<tr><td>GST丢弃说明</td><td colspan="5">UTC跨日回绕已修正; 丢弃talker记录: 主时间轴%s, 丢弃%d条少数派(%s)</td></tr>'
                                 % (info['main'], len(info['dropped']),
                                    ', '.join('%s@%s' % (t, u) for t, u, _r in info['dropped'])))
             html_content += f"""
@@ -3291,7 +3291,7 @@ class GPSKinematicAnalyzer:
                             % (pq['rms_mean'], pq['rms_med'], pq['rms_min'], pq['rms_max']))
                 if pq.get('gst_dropped'):
                     info = pq['gst_dropped']
-                    rms_line += ('| GST??? | UTC??????; ?talker??: ????%s, ??%d????(%s) | | | |\n'
+                    rms_line += ('| GST丢弃说明 | UTC跨日回绕已修正; 丢弃talker记录: 主时间轴%s, 丢弃%d条少数派(%s) | | | |\n'
                                  % (info['main'], len(info['dropped']),
                                     ', '.join('%s@%s' % (t, u) for t, u, _r in info['dropped'])))
             md_content += f"""
