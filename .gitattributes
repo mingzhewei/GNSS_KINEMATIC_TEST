@@ -1,0 +1,4 @@
+huace_data/0921复杂场景-华测-多log.log filter=lfs diff=lfs merge=lfs -text
+beidou_data/** -text
+by_data/** -text
+huace_data/** -text
