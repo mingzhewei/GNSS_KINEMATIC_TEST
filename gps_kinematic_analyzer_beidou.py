@@ -100,6 +100,8 @@ class GPSKinematicAnalyzer:
         self.analysis_results = {}
         self.mark_anomalies = mark_anomalies
         self.speed_threshold = speed_threshold
+        if not math.isfinite(speed_threshold) or speed_threshold <= 0:
+            raise ValueError('速度阈值必须为有限正数')
 
     # ------------------------------------------------------------------
     # 基础工具
@@ -137,6 +139,25 @@ class GPSKinematicAnalyzer:
             return int(value[:2]) * 3600 + int(value[2:4]) * 60 + float(value[4:])
         except ValueError:
             return None
+
+    @staticmethod
+    def _ascii_timestamp(header):
+        """N4 表7-51：GPS周 + 周内毫秒，不能仅用周内秒跨周作差。"""
+        return int(header[4]) * 604800.0 + int(header[5]) / 1000.0
+
+    @staticmethod
+    def _ascii_time_is_fine(header):
+        """表7-51仅将FINE列为准确GPS时间状态；UNKNOWN不得用于时间差。"""
+        return len(header) > 3 and header[3].strip().upper() == 'FINE'
+
+    @staticmethod
+    def _finite_float(value):
+        """缺失/非法数值保留为NaN，不能当作实测零值。"""
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else math.nan
+        except (ValueError, TypeError):
+            return math.nan
 
     def create_output_dir(self):
         if not os.path.exists(self.output_dir):
@@ -325,11 +346,12 @@ class GPSKinematicAnalyzer:
         for line in lines:
             try:
                 if line.startswith('#'):
-                    hp = line.split(',',8); out.append(int(hp[5])/1000.0)
+                    hp = line.split(',',8)
+                    if self._ascii_time_is_fine(hp): out.append(self._ascii_timestamp(hp))
                 elif line.startswith('$') and key in ('GGA','GST','GRS'):
                     out.append(self._nmea_seconds(line.split(',')[1]))
             except (ValueError,IndexError,TypeError): pass
-        return sorted(x for x in out if x is not None)
+        return sorted(x for x in out if x is not None and math.isfinite(x))
 
     def check_message_integrity(self):
         print("完整性检查与报文周期核对(推荐参考周期，不将差异直接判错)...")
@@ -341,7 +363,8 @@ class GPSKinematicAnalyzer:
             e={'header':display,'matched':headers,'reference_period':reference_period,
                'count':count,'required':required,'status':'ok','note':'',
                'actual_period':None,'actual_rate':None,'loss_rate':None,'time_span':None,
-               'gap_count':0,'max_gap':None,'estimated_missing_slots':0}
+               'gap_count':0,'max_gap':None,'estimated_missing_slots':0,
+               'time_status_excluded_count':0}
             if count==0:
                 e['status']='error' if required else 'info'
                 e['note']='报文缺失: 未在数据流中找到'
@@ -349,6 +372,9 @@ class GPSKinematicAnalyzer:
             if key=='OBSVMB':
                 ts=[r['timestamp'] for r in self.obsvm_records]
             else:
+                e['time_status_excluded_count']=sum(
+                    line.startswith('#') and not self._ascii_time_is_fine(line.split(',',8))
+                    for line in lines)
                 ts=self._extract_category_timestamps(key,lines)
             if len(ts)>=2:
                 iv=[b-a for a,b in zip(ts,ts[1:]) if b-a>1e-6]
@@ -381,6 +407,9 @@ class GPSKinematicAnalyzer:
                 else: e['note']='时间戳间隔不足'
             else:
                 e['note']='无可用时间戳，未计算周期；按实测条数呈现'
+            if e['time_status_excluded_count']:
+                note=f"排除{e['time_status_excluded_count']}条非FINE/未知时间状态的ASCII历元"
+                e['note']=(e['note']+'; ' if e['note'] else '')+note
             checks.append(e)
             print(f"  {display}({','.join(headers) or 'binary'}): {count}条, "
                   + (f"实际{e['actual_period']:.3f}s/{e['actual_rate']:.2f}Hz, " if e['actual_period'] else '')
@@ -406,30 +435,44 @@ class GPSKinematicAnalyzer:
             try:
                 h,d=line.split(';',1); hp=h.split(','); f=d.split('*')[0].split(',')
                 if len(hp)<8 or len(f)<30: continue
-                timestamp=int(hp[5])/1000.0; week=int(hp[4])
+                timestamp=self._ascii_timestamp(hp); week=int(hp[4])
+                time_status=hp[3].strip().upper(); time_valid=self._ascii_time_is_fine(hp)
                 pos_status=f[0].strip(); pos_type=f[1].strip()
-                lat=float(f[2]); lon=float(f[3]); height=float(f[4])
-                lat_sigma=float(f[7]); lon_sigma=float(f[8]); hgt_sigma=float(f[9])
+                lat=self._finite_float(f[2]); lon=self._finite_float(f[3]); height=self._finite_float(f[4])
+                undulation=self._finite_float(f[5]); datum=f[6].strip()
+                lat_sigma=self._finite_float(f[7]); lon_sigma=self._finite_float(f[8]); hgt_sigma=self._finite_float(f[9])
                 station=f[10].strip().strip('"')
                 diff_age=float(f[11]) if f[11] else 0.0; sol_age=float(f[12]) if f[12] else 0.0
                 num_svs=int(f[13]) if f[13].strip().isdigit() else 0
                 num_soln=int(f[14]) if f[14].strip().isdigit() else 0
                 vel_status=f[21].strip(); vel_type=f[22].strip()
-                hor_spd=float(f[23]) if f[23] else 0.0
-                trk=float(f[24]) if f[24] else 0.0
-                vert_spd=float(f[25]) if f[25] else 0.0
-                vert_sigma=float(f[26]) if f[26] else None
-                hor_sigma=float(f[27]) if f[27] else None
+                # N4 R1.15 表7-70，分号后零基索引；ID = 索引 + 2。
+                latency=self._finite_float(f[23])
+                velocity_diff_age=self._finite_float(f[24])
+                hor_spd=self._finite_float(f[25])
+                trk=self._finite_float(f[26])
+                vert_spd=self._finite_float(f[27])
+                vert_sigma=self._finite_float(f[28])
+                hor_sigma=self._finite_float(f[29])
                 # BESTNAV速度为水平速度+真北航迹角，可分解为E/N。
                 rad=math.radians(trk)
-                valid_coord=(pos_status=='SOL_COMPUTED' and abs(lat)<=90 and abs(lon)<=180 and not (lat==0 and lon==0))
-                data.append({'timestamp':timestamp,'week':week,
+                valid_coord=(pos_status=='SOL_COMPUTED' and abs(lat)<=90 and abs(lon)<=180
+                             and all(math.isfinite(v) for v in (lat,lon,height)))
+                # V-sol status独立于p-sol status，不能用位置失效否定有效的多普勒速度。
+                valid_velocity=(vel_status=='SOL_COMPUTED' and hor_spd>=0
+                                and all(math.isfinite(v) for v in (hor_spd,trk,vert_spd)))
+                data.append({'timestamp':timestamp,'week':week,'tow_s':int(hp[5])/1000.0,
                     'latitude':lat,'longitude':lon,'height':height,
+                    'undulation':undulation,'datum':datum,'ellipsoid_height':height+undulation,
                     'valid_coord':valid_coord,'sol_status':pos_status,'pos_type':pos_type,
                     'solution_type':pos_type,'lat_sigma':lat_sigma,'lon_sigma':lon_sigma,
                     'hgt_sigma':hgt_sigma,'station_id':station,'diff_age':diff_age,'sol_age':sol_age,
                     'num_satellites':num_svs,'num_soln_satellites':num_soln,
                     'vel_status':vel_status,'vel_type':vel_type,'hor_spd':hor_spd,'vert_spd':vert_spd,'trk_gnd':trk,
+                    'valid_velocity':valid_velocity,'velocity_latency':latency,
+                    'time_status':time_status,'time_valid':time_valid,
+                    'valid_velocity_time':valid_velocity and time_valid and math.isfinite(latency),
+                    'velocity_diff_age':velocity_diff_age,'velocity_timestamp':timestamp-latency,
                     'vert_sigma':vert_sigma,'hor_sigma':hor_sigma,
                     'velocity_east':hor_spd*math.sin(rad),'velocity_north':hor_spd*math.cos(rad),
                     'velocity_up':vert_spd})
@@ -443,19 +486,25 @@ class GPSKinematicAnalyzer:
     def analyze_sampling_rate(self):
         print("分析采样率...")
         data=self.parse_bestnava()
-        if len(data)<2:
-            print("BESTNAVA不足两帧，无法分析采样率"); return
-        ts=sorted(d['timestamp'] for d in data)
+        ts=sorted(d['timestamp'] for d in data if d['time_valid'] and math.isfinite(d['timestamp']))
+        result={'time_valid_epochs':len(ts),'invalid_time_status_epochs':len(data)-len(ts),
+                'source':'#BESTNAVA GPS周数+周内毫秒，仅FINE时间状态'}
+        if len(ts)<2:
+            self.analysis_results['sampling_rate']=result
+            print("BESTNAVA有效FINE时间不足两帧，无法分析采样率"); return
         iv=[b-a for a,b in zip(ts,ts[1:]) if b-a>1e-6]
-        if not iv: return
+        if not iv:
+            self.analysis_results['sampling_rate']=result
+            return
         med=statistics.median(iv); avg=statistics.mean(iv); gaps=[x for x in iv if x>med*5]
-        expected=(ts[-1]-ts[0])/med if med>0 else 0
-        loss=max(0.0,(1-len(data)/expected)*100) if expected>0 else 0
-        self.analysis_results['sampling_rate']={
+        expected=(ts[-1]-ts[0])/med+1 if med>0 else 0
+        loss=max(0.0,(1-len(ts)/expected)*100) if expected>0 else 0
+        result.update({
             'sampling_rate':1/med if med>0 else 0,'median_interval':med,
             'average_interval':avg,'avg_rate':1/avg if avg>0 else 0,
             'gap_count':len(gaps),'loss_rate':loss,'intervals':iv,
-            'source':'#BESTNAVA GPS周秒'}
+        })
+        self.analysis_results['sampling_rate']=result
         print(f"BESTNAVA采样率: {1/med:.2f}Hz; 丢帧率估算 {loss:.1f}%")
 
     def analyze_solution_type(self):
@@ -669,12 +718,21 @@ class GPSKinematicAnalyzer:
 
     def analyze_velocity(self):
         print("分析速度...")
-        data=[d for d in self.parse_bestnava() if d.get('vel_status')=='SOL_COMPUTED']
+        records=self.parse_bestnava()
+        data=[d for d in records if d['valid_velocity']]
+        result={'valid_epochs':len(data),'excluded_epochs':len(records)-len(data),
+                'missing_time_epochs':sum(not d['valid_velocity_time'] for d in data),
+                'invalid_time_status_epochs':sum(not d['time_valid'] for d in data),
+                'missing_latency_epochs':sum(not math.isfinite(d['velocity_latency']) for d in data),
+                'source':'#BESTNAVA速度段','velocity_types':dict(Counter(d['vel_type'] for d in data))}
+        self.analysis_results['velocity']=result
         if not data:
-            print("无SOL_COMPUTED速度数据"); return
-        speeds=[math.sqrt(d['velocity_east']**2+d['velocity_north']**2+d['velocity_up']**2) for d in data]
-        self.analysis_results['velocity']={'average_speed':statistics.mean(speeds),'max_speed':max(speeds),'speeds':speeds,'source':'#BESTNAVA速度段'}
-        print(f"平均速度 {statistics.mean(speeds):.3f} m/s; 最大 {max(speeds):.3f} m/s")
+            print("无有效SOL_COMPUTED速度数据"); return
+        speeds=[math.hypot(d['hor_spd'],d['vert_spd']) for d in data]
+        horizontal=[d['hor_spd'] for d in data]
+        result.update(average_speed=statistics.mean(speeds),max_speed=max(speeds),speeds=speeds,
+                      average_horizontal_speed=statistics.mean(horizontal),max_horizontal_speed=max(horizontal))
+        print(f"三维合速度均值 {statistics.mean(speeds):.3f} m/s; 最大 {max(speeds):.3f} m/s")
 
     # ------------------------------------------------------------------
     # UM980特色: RTKSTATUS / BESTSAT / SATSINFO / OBSVM
@@ -691,7 +749,7 @@ class GPSKinematicAnalyzer:
                 status_map={0:'无差分源数据输入',1:'差分源可用观测值不足',2:'差分源延迟较大',
                             3:'电离层活跃',4:'ROVER端观测值不足',5:'满足RTK解算'}
                 calc=int(f[12]) if f[12] else 0
-                data.append({'timestamp':int(hp[5])/1000.0,'gps_source':u32(f[0]),
+                data.append({'timestamp':self._ascii_timestamp(hp),'gps_source':u32(f[0]),
                     'bds_source1':u32(f[2]),'bds_source2':u32(f[3]),'glo_source':u32(f[5]),
                     'gal_source1':u32(f[7]),'gal_source2':u32(f[8]),'qzss_source':u32(f[9]),
                     'pos_type':f[11],'calc_status':calc,'calc_status_text':status_map.get(calc,'未知'),
@@ -728,7 +786,7 @@ class GPSKinematicAnalyzer:
                     if idx+4>len(f): break
                     rows.append({'system':f[idx],'prn':f[idx+1],'status':f[idx+2],'signal_mask':f[idx+3]})
                     idx+=4
-                data.append({'timestamp':int(hp[5])/1000.0,'rows':rows})
+                data.append({'timestamp':self._ascii_timestamp(hp),'rows':rows})
             except (ValueError,IndexError): continue
         self._cache_bestsat=data; return data
 
@@ -813,13 +871,16 @@ class GPSKinematicAnalyzer:
         if self.analysis_results.get('rtk_status',{}).get('available'): self._plot_rtk_status()
 
     def _plot_position_time_series(self,data,source='gnss'):
-        data=[d for d in data if d.get('valid_coord')]
         if not data: return
-        t0=min(d['timestamp'] for d in data); x=[d['timestamp']-t0 for d in data]
+        timed=[d for d in data if d['time_valid'] and math.isfinite(d['timestamp'])]
+        if not timed: return
+        t0=min(d['timestamp'] for d in timed)
+        x=[d['timestamp']-t0 if d['time_valid'] and math.isfinite(d['timestamp']) else math.nan
+           for d in data]
         plt.figure(figsize=(12,8))
         for i,(key,title,ylabel) in enumerate((('latitude','Latitude Time Series','degrees'),
-            ('longitude','Longitude Time Series','degrees'),('height','Height Time Series','meters')),1):
-            plt.subplot(3,1,i); plt.plot(x,[d[key] for d in data],linewidth=0.8)
+            ('longitude','Longitude Time Series','degrees'),('height','Height above MSL (BESTNAV hgt)','meters')),1):
+            plt.subplot(3,1,i); plt.plot(x,[d[key] if d['valid_coord'] and d['time_valid'] else math.nan for d in data],linewidth=0.8)
             plt.title(title); plt.xlabel('Time (seconds, rel. BESTNAV epoch0)'); plt.ylabel(ylabel); plt.grid(alpha=.3)
         plt.tight_layout(); out=os.path.join(self.output_dir,'position_time_series_gnss.png'); plt.savefig(out,dpi=150); plt.close(); print('保存',out)
 
@@ -835,9 +896,12 @@ class GPSKinematicAnalyzer:
     def _plot_satellite_time_series(self):
         data=self.parse_bestnava()
         if not data: return
-        t0=min(d['timestamp'] for d in data); x=[d['timestamp']-t0 for d in data]
-        plt.figure(figsize=(12,6)); plt.plot(x,[d['num_satellites'] for d in data],label='Tracked (#SVs)',color='#1f77b4')
-        plt.plot(x,[d['num_soln_satellites'] for d in data],label='Used (#solnSVs)',color='#d62728')
+        timed=[d for d in data if d['time_valid'] and math.isfinite(d['timestamp'])]
+        if not timed: return
+        t0=min(d['timestamp'] for d in timed)
+        x=[d['timestamp']-t0 if d['time_valid'] and math.isfinite(d['timestamp']) else math.nan for d in data]
+        plt.figure(figsize=(12,6)); plt.plot(x,[d['num_satellites'] if d['time_valid'] else math.nan for d in data],label='Tracked (#SVs)',color='#1f77b4')
+        plt.plot(x,[d['num_soln_satellites'] if d['time_valid'] else math.nan for d in data],label='Used (#solnSVs)',color='#d62728')
         plt.title('Satellite Count Time Series (BESTNAV)'); plt.xlabel('Time (seconds)'); plt.ylabel('Number'); plt.legend(); plt.grid(alpha=.3); plt.tight_layout()
         out=os.path.join(self.output_dir,'satellite_time_series.png'); plt.savefig(out,dpi=150); plt.close(); print('保存',out)
 
@@ -852,20 +916,27 @@ class GPSKinematicAnalyzer:
         out=os.path.join(self.output_dir,'dop_time_series.png'); plt.savefig(out,dpi=150); plt.close(); print('保存',out)
 
     def _plot_velocity_time_series(self):
-        data=[d for d in self.parse_bestnava() if d['vel_status']=='SOL_COMPUTED']
+        data=self.parse_bestnava()
         if not data: return
-        t0=min(d['timestamp'] for d in data); x=[d['timestamp']-t0 for d in data]
+        timed=[d for d in data if d['time_valid'] and math.isfinite(d['timestamp'])]
+        if not timed: return
+        t0=timed[0]['timestamp']
+        x=[d['velocity_timestamp']-t0 if d['valid_velocity_time'] else math.nan for d in data]
         fig,axes=plt.subplots(4,1,figsize=(12,10),sharex=True)
         for ax,key,title,color in zip(axes,('velocity_north','velocity_east','velocity_up',None),
-            ('North Velocity','East Velocity','Up Velocity','Combined Speed'),
+            ('North Velocity','East Velocity','Up Velocity','Horizontal / 3D Speed'),
             ('#1f77b4','#2ca02c','#d62728','#9467bd')):
-            if key: ax.plot(x,[d[key] for d in data],color=color,linewidth=.8)
-            else: ax.plot(x,[math.sqrt(d['velocity_north']**2+d['velocity_east']**2+d['velocity_up']**2) for d in data],color=color,linewidth=.8)
+            if key: ax.plot(x,[d[key] if d['valid_velocity_time'] else math.nan for d in data],color=color,linewidth=.8)
+            else:
+                ax.plot(x,[math.hypot(d['hor_spd'],d['vert_spd']) if d['valid_velocity_time'] else math.nan for d in data],color=color,linewidth=.8,label='3D speed')
+                ax.plot(x,[d['hor_spd'] if d['valid_velocity_time'] else math.nan for d in data],color='#ff7f0e',linewidth=.8,ls='--',label='Horizontal speed')
+                ax.legend()
             ax.set_title(title); ax.grid(alpha=.3); ax.set_ylabel('m/s')
-        axes[-1].set_xlabel('Time (seconds)'); fig.tight_layout()
+        axes[-1].set_xlabel('Time (s, epoch - velocity latency, rel. first BESTNAV epoch)'); fig.tight_layout()
         out=os.path.join(self.output_dir,'velocity_time_series.png'); plt.savefig(out,dpi=150); plt.close(); print('保存',out)
 
     def _latlon_to_enu(self,lat,lon,height,ref_lat,ref_lon,ref_height):
+        """WGS84大地坐标转ENU；height和ref_height必须为椭球高（m）。"""
         a=6378137.0; f=1/298.257223563; e2=2*f-f*f
         def xyz(lat,lon,h):
             p=math.radians(lat); l=math.radians(lon); N=a/math.sqrt(1-e2*math.sin(p)**2)
@@ -876,18 +947,49 @@ class GPSKinematicAnalyzer:
                 -math.sin(p)*math.cos(l)*dx-math.sin(p)*math.sin(l)*dy+math.cos(p)*dz,
                 math.cos(p)*math.cos(l)*dx+math.cos(p)*math.sin(l)*dy+math.sin(p)*dz)
 
+    def _trajectory_points(self,data):
+        # 表7-70 hgt为海拔高，undulation为大地水准面差距；h = H + N。
+        valid=[(i,d) for i,d in enumerate(data) if d.get('valid_coord')
+               and d['datum']=='WGS84' and math.isfinite(d['ellipsoid_height'])]
+        if not valid: return []
+        ref=valid[0][1]; enu=[]
+        for i,d in valid:
+            E,N,U=self._latlon_to_enu(d['latitude'],d['longitude'],d['ellipsoid_height'],
+                                     ref['latitude'],ref['longitude'],ref['ellipsoid_height'])
+            enu.append({'E':E,'N':N,'U':U,'timestamp':d['timestamp'],
+                        'time_valid':d['time_valid'],'source_index':i,
+                        'solution_type':d['solution_type']})
+        return enu
+
+    def _trajectory_anomalies(self,enu):
+        """沿用项目轨迹标记口径：水平位移/dt，不替代BESTNAV速度。"""
+        if not self.mark_anomalies: return []
+        anomalies=[]
+        for a,b in zip(enu,enu[1:]):
+            dt=b['timestamp']-a['timestamp']
+            # 无解段、重复/倒退时间不推算运动速度，也不拼接轨迹。
+            if (b['source_index']!=a['source_index']+1 or not a['time_valid']
+                    or not b['time_valid'] or dt<=0): continue
+            speed=math.hypot(b['E']-a['E'],b['N']-a['N'])/dt
+            if speed>self.speed_threshold:
+                anomalies.append(dict(b,position_difference_speed=speed))
+        return anomalies
+
     def _plot_gnss_enu_trajectory(self,data):
-        data=[d for d in data if d.get('valid_coord')]
-        if len(data)<2: return
-        ref=data[0]; enu=[]
-        for d in data:
-            E,N,U=self._latlon_to_enu(d['latitude'],d['longitude'],d['height'],ref['latitude'],ref['longitude'],ref['height'])
-            enu.append({'E':E,'N':N,'U':U,'solution_type':d['solution_type']})
+        enu=self._trajectory_points(data)
+        if len(enu)<2: return
         present=sorted(set(x['solution_type'] for x in enu))
         plt.figure(figsize=(14,10))
-        for a,b in zip(enu[:-1],enu[1:]): plt.plot([a['E'],b['E']],[a['N'],b['N']],c=criteria.type_color(a['solution_type']),linewidth=1.2,alpha=.8)
+        for a,b in zip(enu[:-1],enu[1:]):
+            if b['source_index']==a['source_index']+1 and b['timestamp']>a['timestamp']:
+                plt.plot([a['E'],b['E']],[a['N'],b['N']],c=criteria.type_color(a['solution_type']),linewidth=1.2,alpha=.8)
         for t in present:
             pts=[x for x in enu if x['solution_type']==t]; plt.scatter([x['E'] for x in pts],[x['N'] for x in pts],c=criteria.type_color(t),s=12,label=criteria.legend_label(t,len(pts)))
+        anomalies=self._trajectory_anomalies(enu)
+        self.analysis_results['trajectory']={'valid_epochs':len(enu),'anomaly_count':len(anomalies)}
+        if anomalies:
+            plt.scatter([p['E'] for p in anomalies],[p['N'] for p in anomalies],c='red',marker='x',s=70,
+                        label=f'Horizontal position difference / dt > {self.speed_threshold:g} m/s ({len(anomalies)})',zorder=5)
         plt.xlabel('Easting (m)'); plt.ylabel('Northing (m)'); plt.title('GNSS Trajectory in ENU Coordinate (Colored by Position Type)')
         plt.legend(); plt.grid(alpha=.3); plt.axis('equal'); plt.tight_layout()
         out=os.path.join(self.output_dir,'gnss_enu_trajectory.png'); plt.savefig(out,dpi=150); plt.close(); print('保存',out)
@@ -947,8 +1049,25 @@ class GPSKinematicAnalyzer:
     # ------------------------------------------------------------------
     def _safe(self,x):
         if x is None: return '-'
-        if isinstance(x,float): return f'{x:.3f}'
+        if isinstance(x,float): return f'{x:.3f}' if math.isfinite(x) else '-'
         return str(x)
+
+    def _motion_report_lines(self):
+        vel=self.analysis_results.get('velocity',{})
+        lines=[
+            f"水平速度均值 {self._safe(vel.get('average_horizontal_speed'))} m/s；最大 {self._safe(vel.get('max_horizontal_speed'))} m/s。",
+            f"三维合速度均值 {self._safe(vel.get('average_speed'))} m/s；最大 {self._safe(vel.get('max_speed'))} m/s。",
+            f"有效速度历元 {vel.get('valid_epochs',0)}；未纳入 {vel.get('excluded_epochs',0)}（速度状态无效或必需字段缺失/非法）。",
+            f"其中时间状态非FINE的速度历元 {vel.get('invalid_time_status_epochs',0)}：速度仍纳入统计，时间序列留空。",
+            f"其中缺少有效latency的速度历元 {vel.get('missing_latency_epochs',0)}：保留速度统计，时间序列留空。",
+            "速度取自BESTNAV速度解：东/北分量由水平速度与相对真北的航迹角分解，向上速度取垂直速度；三维合速度为sqrt(水平速度²+垂直速度²)，均值为有效历元的算术平均。",
+            "速度时刻按FINE状态的GPS周/周内毫秒减latency校正；UNKNOWN或未识别时标不用于时间计算，差分龄期不参与速度或时间校正。位置状态与速度状态分别判断。",
+            "ENU以首个有效WGS84坐标为参考，使用椭球高=hgt海拔高+undulation大地水准面差距；无解段断线。本报告未计算累计路程，轨迹不是精度误差。",
+        ]
+        if self.mark_anomalies:
+            count=self.analysis_results.get('trajectory',{}).get('anomaly_count',0)
+            lines.append(f"轨迹红X：相邻有效记录的水平位移/时间差超过用户阈值 {self.speed_threshold:g} m/s，共 {count} 点；不跨无解段或非递增时间计算。此阈值不是厂家质量标准，位置差分速度不替代BESTNAV速度。")
+        return lines
 
     def generate_html_report(self):
         print("生成HTML报告...")
@@ -996,12 +1115,15 @@ class GPSKinematicAnalyzer:
 <tr><td>GST伪距残差RMS m</td><td>{self._safe(pq.get('rms_mean'))}</td><td>{self._safe(pq.get('rms_med'))}</td><td>{self._safe(pq.get('rms_min'))}</td><td>{self._safe(pq.get('rms_max'))}</td></tr>
 <tr><td>GST丢弃说明</td><td colspan="4">{('UTC跨日回绕已修正; 丢弃talker记录: 主时间轴%s, 丢弃%d条少数派(%s)' % (pq['gst_dropped']['main'], len(pq['gst_dropped']['dropped']), ', '.join('%s@%s' % (t,u) for t,u,_r in pq['gst_dropped']['dropped']))) if pq.get('gst_dropped') else '单talker, 无丢弃'}</td></tr>
 <tr><td>GRS逐星残差 m</td><td>{self._safe(pq.get('grs_mean'))}</td><td>{self._safe(pq.get('grs_med'))}</td><td>{self._safe(pq.get('grs_min'))}</td><td>{self._safe(pq.get('grs_max'))}</td></tr></table>
-<h2>6. 速度与轨迹</h2><div class="chart"><img src="velocity_time_series.png"></div><div class="chart"><img src="gnss_enu_trajectory.png"></div><p>平均速度 {self._safe(vel.get('average_speed'))} m/s；最大速度 {self._safe(vel.get('max_speed'))} m/s。ENU以首个有效BESTNAV点为参考点，仅用于轨迹形状，不是精度误差。</p>
+<h2>6. 速度与轨迹</h2><div class="chart"><img src="velocity_time_series.png"></div><div class="chart"><img src="gnss_enu_trajectory.png"></div>{''.join('<p>'+line+'</p>' for line in self._motion_report_lines())}
 <h2>7. RTK链路与状态</h2><p>基站ID {rtk['primary_station'] if rtk else 'N/A'}；差分龄期平均{self._safe(rtk.get('avg_diff_age') if rtk else None)}s，最大{self._safe(rtk.get('max_diff_age') if rtk else None)}s。</p><div class="chart"><img src="rtk_status_timeline.png"></div><table><tr><th>RTK计算状态</th><th>数量</th></tr>{''.join(f'<tr><td>{k}</td><td>{v}</td></tr>' for k,v in rts.get('calc_status_count',{}).items())}</table>
 <h2>8. 原始观测质量</h2><div class="chart"><img src="cn0_analysis.png"></div><p>OBSVM {obs.get('epochs',0)}历元/{obs.get('obs_total',0)}频点观测；平均C/N0 {self._safe(obs.get('mean_cn0'))} dB-Hz；低C/N0(&lt;35)占比{obs.get('low_ratio',0):.1f}%；locktime归零/消失事件{len(obs.get('loss_events',[]))}个；重捕获事件{len(obs.get('reacq_events',[]))}个。事件判定仅基于OBSVM实测locktime，1Hz采集时间分辨率为1s。</p>
 <h2>9. SATSINFO</h2><p>检测到 {si.get("epochs",0)} 个SATSINFOA历元。该ASCII变长频率段在手册表格中未给出足够无歧义的切分规则，为避免字段猜测，本版不生成天空分布/SNR统计。</p>
 <h2>10. 依据与限制</h2><ul><li>BESTNAV字段依据手册7.3.19表7-70；GGA/GSA/GST/GRS依据7.1.1.3/7.1.1.7/7.1.1.8/7.1.1.6。</li><li>OBSVM字段依据7.3.65表7-137/7-138/7-140，仅保留CRC通过的二进制块。</li><li>SATSINFO仅做存在性检查（原始定义见7.3.89表7-174~7-177）；BESTSAT依据7.3.22表7-76~7-80；RTKSTATUS依据7.3.85表7-169。</li><li>本数据为Kinematic/固定场景实测，未提供外业真值，不能计算绝对定位误差。</li></ul></div></body></html>'''
-        out=os.path.join(self.output_dir,'report.html'); open(out,'w',encoding='utf-8').write(html); print('生成',out)
+        out=os.path.join(self.output_dir,'report.html')
+        with open(out,'w',encoding='utf-8',newline='\n') as report_file:
+            report_file.write(html)
+        print('生成',out)
 
     def generate_md_report(self):
         print("生成Markdown报告...")
@@ -1012,6 +1134,8 @@ class GPSKinematicAnalyzer:
         lines += ['','## 解类型',f'- 总历元：{st.get("total_epochs",0)}',f'- 固定解率：{st.get("fixed_ratio",0):.1f}%']
         for k,v in sorted(st.get('type_count',{}).items(),key=lambda x:-x[1]): lines.append(f'- {k}: {v}')
         lines += ['','## 位置σ / 伪距残差',f'- 纬度σ中位：{self._safe(pq.get("lat_med"))} m',f'- 经度σ中位：{self._safe(pq.get("lon_med"))} m',f'- 高度σ中位：{self._safe(pq.get("hgt_med"))} m',f'- GST RMS中位：{self._safe(pq.get("rms_med"))} m',f'- GRS逐星残差中位：{self._safe(pq.get("grs_med"))} m','','## OBSVM',f'- 历元：{obs.get("epochs",0)}；频点观测：{obs.get("obs_total",0)}',f'- C/N0均值：{self._safe(obs.get("mean_cn0"))} dB-Hz；低C/N0占比：{obs.get("low_ratio",0):.1f}%',f'- 失锁/消失事件：{len(obs.get("loss_events",[]))}；重捕获事件：{len(obs.get("reacq_events",[]))}','','## 限制','Kinematic数据无外业真值，不能计算绝对定位误差；接收机σ/RMS为自估质量指标。']
+        lines += ['','## 速度与轨迹',''] + ['- '+line for line in self._motion_report_lines()]
+        lines += ['','![速度](velocity_time_series.png)','![ENU轨迹](gnss_enu_trajectory.png)']
         out=os.path.join(self.output_dir,'report.md'); open(out,'w',encoding='utf-8',newline='\n').write('\n'.join(lines)+'\n'); print('生成',out)
 
     def run_analysis(self):
@@ -1055,8 +1179,8 @@ def run_with_gui():
 
         try:
             speed_threshold = float(speed_threshold_str) if speed_threshold_str else 2.0
-            if speed_threshold <= 0:
-                messagebox.showerror("错误", "速度阈值必须大于0")
+            if not math.isfinite(speed_threshold) or speed_threshold <= 0:
+                messagebox.showerror("错误", "速度阈值必须为有限正数")
                 return
         except ValueError:
             messagebox.showerror("错误", "速度阈值必须是有效的数字")
@@ -1153,7 +1277,7 @@ def run_with_gui():
     speed_threshold_entry.pack(side=tk.LEFT)
     speed_threshold_entry.insert(0, "2.0")
 
-    threshold_hint = tk.Label(threshold_frame, text="(超过此速度阈值的点将被标记为异常)",
+    threshold_hint = tk.Label(threshold_frame, text="(相邻位置水平位移/时间差超过阈值时标记)",
                              font=("微软雅黑", 8), bg="#f0f0f0", fg="gray")
     threshold_hint.pack(side=tk.LEFT, padx=(10, 0))
 
@@ -1191,7 +1315,8 @@ def run_with_gui():
 主定位/速度以 #BESTNAVA 为准；带时间戳的以时间戳为准。
 
 异常点说明：
-- 相邻两点速度超过阈值时标记为异常，轨迹图用红色X显示
+- 相邻有效记录的水平位移/时间差超过用户阈值时，轨迹图用红色X显示
+- 不跨无解段或重复/倒退时间推算；此值不替代BESTNAV速度，不是厂家质量判据
     """
 
     info_frame = tk.Frame(root, bg="#f0f0f0")
@@ -1207,9 +1332,11 @@ def main():
     import sys
     parser=argparse.ArgumentParser(description='和芯星通UM980 GNSS/RTK Kinematic定位数据分析程序')
     parser.add_argument('input_file',nargs='?',help='输入log/dat文件路径')
-    parser.add_argument('--mark-anomalies',action='store_true',help='轨迹图中标记速度异常点')
-    parser.add_argument('--speed-threshold',type=float,default=2.0,help='异常速度阈值m/s')
+    parser.add_argument('--mark-anomalies',action='store_true',help='轨迹图中标记相邻位置水平位移/时间差超阈值的点')
+    parser.add_argument('--speed-threshold',type=float,default=2.0,help='位置差分速度用户阈值m/s，必须为有限正数')
     args=parser.parse_args()
+    if not math.isfinite(args.speed_threshold) or args.speed_threshold<=0:
+        parser.error('--speed-threshold必须为有限正数')
     if args.input_file:
         if not os.path.exists(args.input_file): print(f'错误: 文件不存在 - {args.input_file}'); return
         GPSKinematicAnalyzer(args.input_file,mark_anomalies=args.mark_anomalies,speed_threshold=args.speed_threshold).run_analysis()
