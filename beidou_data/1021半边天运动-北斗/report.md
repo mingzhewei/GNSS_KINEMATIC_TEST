@@ -1,7 +1,7 @@
 # UM980 / 北斗星通 GNSS Kinematic分析报告
 
 - 输入：`1021半边天运动-北斗.log`
-- 生成时间：2026-10-28 19:35:20
+- 生成时间：2026-10-28 21:23:45
 - 协议依据：N4 Products Commands and Logs Reference Book R1.15
 
 ## 完整性与周期

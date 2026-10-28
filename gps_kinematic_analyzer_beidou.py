@@ -480,7 +480,8 @@ class GPSKinematicAnalyzer:
         self._cache_bestnava=data; return data
 
     def parse_solution_status(self):
-        return [{'timestamp':d['timestamp'],'sol_stat_str':d['sol_status'],'sol_stat':-1,
+        return [{'timestamp':d['timestamp'],'time_valid':d['time_valid'],
+                 'sol_stat_str':d['sol_status'],'sol_stat':-1,
                  'pos_type':d['pos_type']} for d in self.parse_bestnava()]
 
     def analyze_sampling_rate(self):
@@ -704,8 +705,11 @@ class GPSKinematicAnalyzer:
             vals=[d[key] for d in pos if d.get(key,0)>0]; a,med,mn,mx=st(vals)
             if a is not None: res[f'{name}_mean']=a; res[f'{name}_med']=med; res[f'{name}_min']=mn; res[f'{name}_max']=mx
         if pos:
-            t0=pos[0]['timestamp']; res['pos_t']=[d['timestamp']-t0 for d in pos]
+            timed_pos=[d for d in pos if d['time_valid'] and math.isfinite(d['timestamp'])]
+            t0=timed_pos[0]['timestamp'] if timed_pos else 0.0
+            res['pos_t']=[d['timestamp']-t0 if d['time_valid'] and math.isfinite(d['timestamp']) else math.nan for d in pos]
             res['pos_lat']=[d['lat_sigma'] for d in pos]; res['pos_lon']=[d['lon_sigma'] for d in pos]; res['pos_hgt']=[d['hgt_sigma'] for d in pos]
+            res['pos_time_invalid_epochs']=len(pos)-len(timed_pos)
         if gst:
             t0=gst[0]['timestamp']; res['gst_t']=[d['timestamp']-t0 for d in gst]; res['gst_rms']=[d['rms'] for d in gst]
             a,med,mn,mx=st(res['gst_rms']); res.update(rms_mean=a,rms_med=med,rms_min=mn,rms_max=mx)
@@ -749,7 +753,8 @@ class GPSKinematicAnalyzer:
                 status_map={0:'无差分源数据输入',1:'差分源可用观测值不足',2:'差分源延迟较大',
                             3:'电离层活跃',4:'ROVER端观测值不足',5:'满足RTK解算'}
                 calc=int(f[12]) if f[12] else 0
-                data.append({'timestamp':self._ascii_timestamp(hp),'gps_source':u32(f[0]),
+                data.append({'timestamp':self._ascii_timestamp(hp),
+                    'time_valid':self._ascii_time_is_fine(hp),'gps_source':u32(f[0]),
                     'bds_source1':u32(f[2]),'bds_source2':u32(f[3]),'glo_source':u32(f[5]),
                     'gal_source1':u32(f[7]),'gal_source2':u32(f[8]),'qzss_source':u32(f[9]),
                     'pos_type':f[11],'calc_status':calc,'calc_status_text':status_map.get(calc,'未知'),
@@ -786,7 +791,8 @@ class GPSKinematicAnalyzer:
                     if idx+4>len(f): break
                     rows.append({'system':f[idx],'prn':f[idx+1],'status':f[idx+2],'signal_mask':f[idx+3]})
                     idx+=4
-                data.append({'timestamp':self._ascii_timestamp(hp),'rows':rows})
+                data.append({'timestamp':self._ascii_timestamp(hp),
+                    'time_valid':self._ascii_time_is_fine(hp),'rows':rows})
             except (ValueError,IndexError): continue
         self._cache_bestsat=data; return data
 
@@ -981,7 +987,8 @@ class GPSKinematicAnalyzer:
         present=sorted(set(x['solution_type'] for x in enu))
         plt.figure(figsize=(14,10))
         for a,b in zip(enu[:-1],enu[1:]):
-            if b['source_index']==a['source_index']+1 and b['timestamp']>a['timestamp']:
+            if (b['source_index']==a['source_index']+1 and a['time_valid'] and b['time_valid']
+                    and b['timestamp']>a['timestamp']):
                 plt.plot([a['E'],b['E']],[a['N'],b['N']],c=criteria.type_color(a['solution_type']),linewidth=1.2,alpha=.8)
         for t in present:
             pts=[x for x in enu if x['solution_type']==t]; plt.scatter([x['E'] for x in pts],[x['N'] for x in pts],c=criteria.type_color(t),s=12,label=criteria.legend_label(t,len(pts)))
@@ -1018,11 +1025,14 @@ class GPSKinematicAnalyzer:
 
     def _plot_solution_status(self,data):
         if not data: return
-        t0=min(d['timestamp'] for d in data); x=[d['timestamp']-t0 for d in data]
-        states=sorted(set(d['sol_stat_str'] for d in data)); y={s:i+1 for i,s in enumerate(states)}
+        timed=[d for d in data if d.get('time_valid',True) and math.isfinite(d['timestamp'])]
+        if not timed: return
+        t0=min(d['timestamp'] for d in timed)
+        x=[d['timestamp']-t0 if d.get('time_valid',True) else math.nan for d in data]
+        states=sorted(set(d['sol_stat_str'] for d in timed)); y={s:i+1 for i,s in enumerate(states)}
         plt.figure(figsize=(14,6))
         for s in states:
-            pts=[(t,y[s]) for t,d in zip(x,data) if d['sol_stat_str']==s]; plt.scatter([p[0] for p in pts],[p[1] for p in pts],s=20,label=s)
+            pts=[(t,y[s]) for t,d in zip(x,data) if d['sol_stat_str']==s and math.isfinite(t)]; plt.scatter([p[0] for p in pts],[p[1] for p in pts],s=20,label=s)
         plt.yticks(list(y.values()),list(y.keys())); plt.xlabel('Time (seconds)'); plt.title('BESTNAV Solution Status Time Series'); plt.grid(alpha=.3,axis='x'); plt.legend()
         plt.tight_layout(); out=os.path.join(self.output_dir,'solution_status.png'); plt.savefig(out,dpi=150); plt.close(); print('保存',out)
 
@@ -1037,11 +1047,15 @@ class GPSKinematicAnalyzer:
 
 
     def _plot_rtk_status(self):
-        rec=self.analysis_results['rtk_status']['records']; t0=rec[0]['timestamp']; x=[d['timestamp']-t0 for d in rec]
+        rec=self.analysis_results['rtk_status']['records']
+        timed=[d for d in rec if d.get('time_valid',True) and math.isfinite(d['timestamp'])]
+        if not timed: return
+        t0=timed[0]['timestamp']
+        x=[d['timestamp']-t0 if d.get('time_valid',True) else math.nan for d in rec]
         states=sorted(set(d['calc_status_text'] for d in rec)); y={s:i+1 for i,s in enumerate(states)}
         plt.figure(figsize=(14,5))
         for s in states:
-            pts=[(t,y[s]) for t,d in zip(x,rec) if d['calc_status_text']==s]; plt.scatter([p[0] for p in pts],[p[1] for p in pts],s=20,label=s)
+            pts=[(t,y[s]) for t,d in zip(x,rec) if d['calc_status_text']==s and math.isfinite(t)]; plt.scatter([p[0] for p in pts],[p[1] for p in pts],s=20,label=s)
         plt.yticks(list(y.values()),list(y.keys())); plt.xlabel('Time (s, rel. RTKSTATUS epoch0)'); plt.title('RTKSTATUS Calculate Status Time Series'); plt.grid(alpha=.3,axis='x'); plt.legend(fontsize=8); plt.tight_layout()
         out=os.path.join(self.output_dir,'rtk_status_timeline.png'); plt.savefig(out,dpi=150); plt.close(); print('保存',out)
     # ------------------------------------------------------------------
@@ -1082,6 +1096,8 @@ class GPSKinematicAnalyzer:
         obs=self.analysis_results.get('obs',{})
         si=self.analysis_results.get('satsinfo',{})
         bs=self.analysis_results.get('bestsat',{})
+        report_times=[d['timestamp'] for d in self.parse_bestnava() if d['time_valid']]
+        report_span=max(report_times)-min(report_times) if report_times else None
         css='''body{font-family:Arial,"Microsoft YaHei",sans-serif;line-height:1.6;background:#f5f5f5;margin:0;padding:20px}.container{max-width:1250px;margin:auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 2px 10px #0002}h1,h2{color:#2c3e50;border-bottom:3px solid #2c3e50;padding-bottom:8px}h2{border-bottom:2px solid #3498db}table{width:100%;border-collapse:collapse;margin:15px 0}th{background:#3498db;color:#fff}th,td{padding:8px;border:1px solid #ddd;text-align:left;vertical-align:top}.pass{color:green;font-weight:bold}.warn{color:#e67e22;font-weight:bold}.fail{color:#c0392b;font-weight:bold}.chart{margin:15px 0}.chart img{width:100%;border:1px solid #ddd}.note{background:#eef6fb;border-left:4px solid #3498db;padding:10px;margin:10px 0}small{color:#666}'''
         rows=''
         for x in mi.get('checks',[]):
@@ -1099,7 +1115,7 @@ class GPSKinematicAnalyzer:
 <tr><td>OBSVMB合法二进制历元</td><td>{self.header_info.get('binary_blocks',0)}个；CRC失败块{self.header_info.get('bad_obsvm_blocks',0)}个</td></tr>
 <tr><td>ASCII校验通过报文 / 锚点候选</td><td>{self.header_info.get('total_lines',0)}条 / {self.header_info.get('ascii_anchor_candidates',0)}个；校验失败锚点{self.header_info.get('ascii_invalid_candidates',0)}个</td></tr>
 <tr><td>ASCII残片/不可识别行</td><td>{self.header_info.get('garbage_lines',0)}行</td></tr>
-<tr><td>BESTNAVA时间跨度</td><td>{(max(d["timestamp"] for d in self.parse_bestnava())-min(d["timestamp"] for d in self.parse_bestnava())) if self.parse_bestnava() else 0}s</td></tr></table>
+<tr><td>BESTNAVA时间跨度（仅FINE）</td><td>{self._safe(report_span)} s</td></tr></table>
 <h2>2. 完整性与周期核对</h2><div class="note">“参考周期”来自推荐配置，仅作对照。实测周期与参考周期不一致时不判为错误，需结合现场配置确认；完整性告警只基于实测时间戳节律的缺槽/跳变和校验结果。</div><table><tr><th>报文</th><th>实测头</th><th>条数</th><th>参考周期s</th><th>实际周期s</th><th>实际Hz</th><th>跳变数</th><th>最大跳变s</th><th>估算缺槽</th><th>状态</th><th>备注</th></tr>{rows}</table>
 <h2>3. 解类型</h2><div class="chart"><img src="gnss_solution_type_distribution.png"></div><p><strong>固定解率:</strong><span class="{'pass' if st.get('fixed_ratio',0)>95 else 'warn' if st.get('fixed_ratio',0)>80 else 'fail'}">{st.get('fixed_ratio',0):.1f}%</span></p><table><tr><th>Pos Type</th><th>数量</th><th>占比</th></tr>{solrows}</table><h3>Sol Status</h3><table><tr><th>Sol Status</th><th>数量</th><th>占比</th></tr>{gsarows}</table>
 <h2>4. 卫星与DOP</h2><div class="chart"><img src="satellite_time_series.png"></div><div class="chart"><img src="dop_time_series.png"></div><table><tr><th>指标</th><th>均值</th><th>最小</th><th>最大</th></tr>

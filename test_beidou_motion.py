@@ -121,6 +121,39 @@ class BeidouMotionTests(unittest.TestCase):
                dict(E=200,N=0,U=0,timestamp=2,time_valid=True,source_index=2)]
         self.assertEqual(a._trajectory_anomalies(enu),[])
 
+    def test_other_ascii_time_series_exclude_unknown_status(self):
+        a = analyzer(sample())
+        a.parsed_data['#RTKSTATUSA'] = [
+            '#RTKSTATUSA,1,GPS,FINE,2294,472312000,0,0,18,16;0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,1*00000000',
+            '#RTKSTATUSA,1,GPS,UNKNOWN,2294,472313000,0,0,18,16;0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,1*00000000']
+        a.parsed_data['#BESTSATA'] = [
+            '#BESTSATA,1,GPS,FINE,2294,472312000,0,0,18,16;0*00000000',
+            '#BESTSATA,1,GPS,UNKNOWN,2294,472313000,0,0,18,16;0*00000000']
+        self.assertEqual([d['time_valid'] for d in a.parse_rtkstatus()], [True, False])
+        self.assertEqual([d['time_valid'] for d in a.parse_bestsat()], [True, False])
+
+    def test_enu_trajectory_does_not_connect_unknown_time_point(self):
+        lines = [sample(ms=472312000),
+                 sample({2:40.07896}, ms=472313000, time_status='UNKNOWN'),
+                 sample({2:40.07897}, ms=472314000)]
+        a = analyzer(*lines)
+        with tempfile.TemporaryDirectory() as tmp:
+            a.output_dir = tmp
+            with patch.object(plt,'close'):
+                a._plot_gnss_enu_trajectory(a.parse_bestnava())
+                self.assertEqual(len(plt.gcf().axes[0].lines),0)
+            plt.close('all')
+
+    def test_position_sigma_time_axis_breaks_at_unknown_time_status(self):
+        a = analyzer(sample(), sample(time_status='UNKNOWN',ms=472313000),
+                     sample(ms=472314000))
+        a.analyze_pos_quality()
+        times=a.analysis_results['pos_quality']['pos_t']
+        self.assertTrue(math.isfinite(times[0]))
+        self.assertTrue(math.isnan(times[1]))
+        self.assertTrue(math.isfinite(times[2]))
+        self.assertEqual(a.analysis_results['pos_quality']['pos_time_invalid_epochs'],1)
+
     def test_week_boundary_and_missing_epoch(self):
         lines = [sample(week=2441,ms=604799000), sample(week=2442,ms=0),
                  sample(week=2442,ms=1000), sample(week=2442,ms=3000)]
